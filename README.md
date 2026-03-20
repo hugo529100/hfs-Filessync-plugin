@@ -1,3 +1,9 @@
+在不同的服務器上使用這個插件可以作爲鏡像備份系統的使用，可以讓閑置的電腦設備組建起具有類似raid的nas服務網絡。
+
+"This plugin to create a RAID-like, mirrored backup system across multiple servers. It effectively turns your spare computing resources into a distributed, redundant NAS network."
+
+
+
 使用aria2c下載器對相同的hfs3服務器進行地毯式的鏡像備份，目前仍在測試完善中。
 因爲我正在備份一個3000萬個文件的巨大網站，所以仍需要時間測試以及改善。
 這個插件的運行機制類似大自然裏面的黏菌生存機制，多分支節點備份比對數據完整性。
