@@ -1,4 +1,4 @@
-exports.version = 3.7
+exports.version = 4.1
 exports.description = "Sync folders from remote HFS3 server (multi-target with independent destinations)"
 exports.apiRequired = 10
 exports.repo = "Hug3O/Filessync-plugin"
@@ -8,7 +8,34 @@ exports.config = {
     type: 'boolean',
     defaultValue: false,
     label: 'Enable Synchronization',
-    helperText: 'Master switch to enable/disable all sync operations'
+    helperText: 'Master switch to enable/disable all sync operations',
+    xs: 6
+  },
+  // 新增：定时同步总开关
+  enableScheduledSync: {
+    type: 'boolean',
+    defaultValue: false,
+    label: 'Enable Scheduled Sync',
+    helperText: 'Enable time-based scheduling for sync operations',
+    xs: 6
+  },
+  // 新增：开始时间
+  syncStartTime: {
+    type: 'string',
+    defaultValue: '00:30',
+    label: 'Sync Start Time',
+    helperText: 'Start time for sync (HH:MM format, e.g., 00:30 for 12:30 AM)',
+    xs: 6,
+    when: config => config.enableScheduledSync === true
+  },
+  // 新增：结束时间
+  syncEndTime: {
+    type: 'string',
+    defaultValue: '08:30',
+    label: 'Sync End Time',
+    helperText: 'End time for sync (HH:MM format, e.g., 08:30 for 8:30 AM)',
+    xs: 6,
+    when: config => config.enableScheduledSync === true
   },
   syncTargets: {
     type: 'array',
@@ -16,17 +43,49 @@ exports.config = {
     helperText: 'Add multiple remote folders to sync',
     default: [],
     fields: {
+      enabled: {
+        type: 'boolean',
+        label: 'Enable this target',
+        defaultValue: true,
+        helperText: '獨立開關此同步目標',
+        xs: 6
+      },
+      priority: {
+        type: 'number',
+        label: 'Priority',
+        defaultValue: 1,
+        helperText: 'Lower number = higher priority (0 = highest)',
+        min: 0,
+        max: 10000,
+        xs: 6
+      },
       name: {
         type: 'string',
         label: 'Target Name',
         helperText: 'A unique name for this sync target',
-        required: true
+        required: true,
+        xs: 12
       },
       remoteAddress: {
         type: 'string',
         label: 'Remote URL',
         helperText: 'Full URL of the remote folder, e.g., http://server/hfs3/folder/',
-        required: true
+        required: true,
+        xs: 12
+      },
+      username: {
+        type: 'string',
+        label: 'Username',
+        helperText: 'Username for HTTP authentication (leave empty if no authentication required)',
+        xs: 6,
+        required: false
+      },
+      password: {
+        type: 'password',
+        label: 'Password',
+        helperText: 'Password for HTTP authentication',
+        xs: 6,
+        required: false
       },
       localDestination: {
         type: 'real_path',
@@ -36,21 +95,31 @@ exports.config = {
         label: 'Local Destination',
         helperText: 'Local folder to sync to (can be different for each target)',
         defaultValue: '',
-        required: true
-      },
-      priority: {
-        type: 'number',
-        label: 'Priority',
-        defaultValue: 1,
-        helperText: 'Lower number = higher priority (0 = highest)',
-        min: 0,
-        max: 10000
+        required: true,
+        xs: 12
       },
       priorityPatterns: {
         type: 'text',
         label: 'Priority Download Patterns',
         defaultValue: '*.htm,*.html,*.js,*.css,*.ttf,*.woff',
-        helperText: 'Comma-separated patterns (supports * wildcard) to download first'
+        helperText: 'Comma-separated patterns (supports * wildcard) to download first',
+        xs: 12
+      },
+      targetExcludeFiles: {
+        type: 'text',
+        label: 'Target Exclude Extensions',
+        defaultValue: '',
+        helperText: 'Comma-separated file extensions to skip for this target only (overrides global settings)',
+        required: false,
+        xs: 6
+      },
+      targetExcludeFolders: {
+        type: 'text',
+        label: 'Target Exclude Folders',
+        defaultValue: '',
+        helperText: 'Comma-separated folder names to exclude for this target only (overrides global settings)',
+        required: false,
+        xs: 6
       }
     }
   },
@@ -58,6 +127,7 @@ exports.config = {
     type: 'boolean',
     defaultValue: false,
     label: 'Mirror Mode',
+    xs: 6,
     helperText: 'ON: Delete local files not in remote (full mirror). OFF: Only add/update files (one-way backup)'
   },
   syncInterval: {
@@ -66,6 +136,7 @@ exports.config = {
     defaultValue: 60,
     helperText: 'How often to sync (in minutes). 0 = disable automatic sync',
     min: 0,
+    xs: 6,
     max: 43200
   },
   aria2Path: {
@@ -80,6 +151,7 @@ exports.config = {
     label: 'File Threads',
     defaultValue: 3,
     helperText: 'Number of threads per file download (multi-threading for single file)',
+    xs: 6,
     min: 1,
     max: 16
   },
@@ -88,6 +160,7 @@ exports.config = {
     label: 'Delay between files (ms)',
     defaultValue: 100,
     helperText: 'Time to wait between processing each file',
+    xs: 6,
     min: 50,
     max: 10000
   },
@@ -103,6 +176,7 @@ exports.config = {
     label: 'Max Retries',
     defaultValue: 3,
     helperText: 'Maximum number of retry attempts on network failure',
+    xs: 6,
     min: 1,
     max: 20
   },
@@ -111,6 +185,7 @@ exports.config = {
     label: 'Retry Delay (seconds)',
     defaultValue: 5,
     helperText: 'Delay between retry attempts',
+    xs: 6,
     min: 1,
     max: 300
   },
@@ -122,21 +197,22 @@ exports.config = {
   },
   excludeFiles: {
     type: 'text',
-    label: 'Exclude Extensions',
+    label: 'Global Exclude Extensions',
     defaultValue: 'tmp,log,bak,swp,cache,part',
-    helperText: 'Comma-separated blacklist of file extensions to skip.'
+    helperText: 'Comma-separated blacklist of file extensions to skip (global)'
   },
   excludeFolders: {
     type: 'text',
-    label: 'Exclude Folders',
+    label: 'Global Exclude Folders',
     defaultValue: 'cache,temp,node_modules,.git,.svn,__pycache__',
-    helperText: 'Comma-separated list of folder names to exclude from sync.'
+    helperText: 'Comma-separated list of folder names to exclude from sync (global)'
   },
   quickScanThreshold: {
     type: 'number',
     label: 'Quick Scan Threshold (minutes)',
     defaultValue: 5,
     helperText: 'If folder mtime is within this range, perform deep scan. Otherwise quick check.',
+    xs: 6,
     min: 1,
     max: 60
   },
@@ -145,6 +221,7 @@ exports.config = {
     label: 'Checkpoint Interval (seconds)',
     defaultValue: 10,
     helperText: 'How often to save sync progress (prevents data loss on restart)',
+    xs: 6,
     min: 5,
     max: 300
   },
@@ -159,6 +236,7 @@ exports.config = {
     defaultValue: false,
     label: 'Verbose Debug',
     helperText: 'Show downloaded files (one line per file)',
+    xs: 6,
     when: config => config.debug === true
   },
   traceDebug: {
@@ -166,6 +244,7 @@ exports.config = {
     defaultValue: false,
     label: 'Trace Debug',
     helperText: 'Show API requests and skipped files (very verbose)',
+    xs: 6,
     when: config => config.verboseDebug === true
   }
 }
@@ -183,12 +262,136 @@ exports.init = api => {
   let isSyncing = false
   let syncStartTime = 0
   let currentInterval = api.getConfig('syncInterval')
+  // 新增：定时检查定时器
+  let scheduledSyncTimer = null
+  // 新增：当前是否在定时窗口内
+  let isInScheduledWindow = false
+  // 新增：上次窗口状态日志时间（用于限制日志频率）
+  let lastWindowLogTime = 0
+  // 新增：窗口状态日志间隔（6600分钟）
+  const WINDOW_LOG_INTERVAL = 60 * 60 * 1000
 
   // 文件名定義
   const getManifestFileName = (targetName) => `sync.${targetName}.manifest.json`
   const getFailedQueueFileName = (targetName) => `sync.${targetName}.failed.json`
   const getSyncStateFileName = (targetName) => `sync.${targetName}.state.json`
   const getGlobalStateFileName = () => `sync.global.state.json`
+
+  // ==================== 新增：时间处理函数 ====================
+
+  /**
+   * 解析时间字符串（HH:MM）为分钟数
+   */
+  const parseTimeToMinutes = (timeStr) => {
+    const [hours, minutes] = timeStr.split(':').map(Number)
+    return hours * 60 + minutes
+  }
+
+  /**
+   * 检查当前时间是否在定时窗口内（支持跨日）
+   */
+  const isWithinScheduledWindow = () => {
+    const enableScheduledSync = api.getConfig('enableScheduledSync')
+    
+    // 如果定时同步未启用，返回true（允许同步）
+    if (!enableScheduledSync) {
+      return true
+    }
+
+    const startTimeStr = api.getConfig('syncStartTime') || '00:30'
+    const endTimeStr = api.getConfig('syncEndTime') || '08:30'
+
+    const now = new Date()
+    const currentMinutes = now.getHours() * 60 + now.getMinutes()
+    
+    const startMinutes = parseTimeToMinutes(startTimeStr)
+    let endMinutes = parseTimeToMinutes(endTimeStr)
+
+    // 处理跨日逻辑
+    if (endMinutes <= startMinutes) {
+      // 结束时间小于等于开始时间，表示跨日（例如：23:00 到 06:00）
+      // 当前时间在 [start, 24:00) 或者 [0, end) 范围内都属于窗口期
+      if (currentMinutes >= startMinutes) {
+        return true // 当前时间在开始时间之后（当天）
+      } else if (currentMinutes < endMinutes) {
+        return true // 当前时间在结束时间之前（次日凌晨）
+      }
+      return false
+    } else {
+      // 正常时间范围（不跨日）
+      return currentMinutes >= startMinutes && currentMinutes < endMinutes
+    }
+  }
+
+  /**
+   * 获取下次定时窗口的开始时间
+   */
+  const getNextScheduledWindowStart = () => {
+    const startTimeStr = api.getConfig('syncStartTime') || '00:30'
+    const [startHours, startMinutes] = startTimeStr.split(':').map(Number)
+    
+    const now = new Date()
+    const nextStart = new Date(now)
+    nextStart.setHours(startHours, startMinutes, 0, 0)
+    
+    // 如果已经过了今天的开始时间，设置为明天的开始时间
+    if (now >= nextStart) {
+      nextStart.setDate(nextStart.getDate() + 1)
+    }
+    
+    return nextStart
+  }
+
+  /**
+   * 获取下次定时窗口的结束时间（基于开始时间计算）
+   */
+  const getNextScheduledWindowEnd = () => {
+    const endTimeStr = api.getConfig('syncEndTime') || '08:30'
+    const [endHours, endMinutes] = endTimeStr.split(':').map(Number)
+    
+    const nextStart = getNextScheduledWindowStart()
+    const nextEnd = new Date(nextStart)
+    nextEnd.setHours(endHours, endMinutes, 0, 0)
+    
+    const startTimeStr = api.getConfig('syncStartTime') || '00:30'
+    const startMinutes = parseTimeToMinutes(startTimeStr)
+    const endMinutesNum = parseTimeToMinutes(endTimeStr)
+    
+    // 如果结束时间小于等于开始时间，表示跨日，结束时间在开始时间的次日
+    if (endMinutesNum <= startMinutes) {
+      nextEnd.setDate(nextEnd.getDate() + 1)
+    }
+    
+    return nextEnd
+  }
+
+  /**
+   * 计算距离下次窗口开始的时间（毫秒）
+   */
+  const getTimeToNextWindow = () => {
+    const enableScheduledSync = api.getConfig('enableScheduledSync')
+    if (!enableScheduledSync) {
+      return 0 // 定时未启用，立即执行
+    }
+
+    const now = new Date()
+    const nextStart = getNextScheduledWindowStart()
+    
+    return Math.max(0, nextStart - now)
+  }
+
+  /**
+   * 检查是否需要执行同步（基于定时窗口）
+   */
+  const shouldRunSync = () => {
+    // 总开关检查
+    if (!api.getConfig('enableSync')) {
+      return false
+    }
+
+    // 检查是否在定时窗口内
+    return isWithinScheduledWindow()
+  }
 
   // ==================== 全局狀態管理 ====================
 
@@ -568,9 +771,39 @@ exports.init = api => {
 
   // ==================== 輔助功能 ====================
 
-  const checkServerAvailable = async (apiUrl) => {
+  // 新增：獲取合併的排除設置
+  const getExcludeSettings = (target) => {
+    const globalExcludeFiles = api.getConfig('excludeFiles').split(',').map(ext => ext.trim().toLowerCase()).filter(ext => ext.length > 0)
+    const globalExcludeFolders = api.getConfig('excludeFolders').split(',').map(folder => folder.trim()).filter(folder => folder.length > 0)
+    
+    // 目標特定的排除設置
+    const targetExcludeFiles = target.targetExcludeFiles 
+      ? target.targetExcludeFiles.split(',').map(ext => ext.trim().toLowerCase()).filter(ext => ext.length > 0)
+      : []
+    
+    const targetExcludeFolders = target.targetExcludeFolders
+      ? target.targetExcludeFolders.split(',').map(folder => folder.trim()).filter(folder => folder.length > 0)
+      : []
+
+    // 合併全局和目標特定設置（目標特定設置優先，所以放在後面）
+    return {
+      excludeFiles: [...globalExcludeFiles, ...targetExcludeFiles],
+      excludeFolders: [...globalExcludeFolders, ...targetExcludeFolders]
+    }
+  }
+
+  const checkServerAvailable = async (apiUrl, username, password) => {
     try {
-      await execAsync(`curl -s -I --connect-timeout 5 "${apiUrl.origin}"`)
+      let curlCmd = `curl -s -I --connect-timeout 5`
+      
+      // 添加认证信息
+      if (username && password) {
+        curlCmd += ` -u "${username}:${password}"`
+      }
+      
+      curlCmd += ` "${apiUrl.origin}"`
+      
+      await execAsync(curlCmd)
       return true
     } catch {
       return false
@@ -616,7 +849,7 @@ exports.init = api => {
     throw lastError
   }
 
-  // 修復：改進排除文件夾功能
+  // 修復：改進排除文件夾功能（使用合併的排除設置）
   const shouldExcludeFolder = (folderPath, excludeFolders) => {
     // 如果排除列表為空，不過濾
     if (!excludeFolders || excludeFolders.length === 0) return false
@@ -677,7 +910,7 @@ exports.init = api => {
     return false
   }
 
-  const getRemoteFileList = async (remoteAddress, targetName, api) => {
+  const getRemoteFileList = async (remoteAddress, targetName, api, username, password) => {
     const verbose = api.getConfig('verboseDebug')
     const trace = api.getConfig('traceDebug')
     const maxRetries = api.getConfig('maxRetries')
@@ -700,7 +933,14 @@ exports.init = api => {
         api.log(`[trace] [${targetName}] Fetching: ${apiEndpoint}`)
       }
 
-      const command = `curl -s --connect-timeout 30 "${apiEndpoint}"`
+      let command = `curl -s --connect-timeout 30`
+      
+      // 添加认证信息
+      if (username && password) {
+        command += ` -u "${username}:${password}"`
+      }
+      
+      command += ` "${apiEndpoint}"`
       
       const stdout = await requestWithRetry(command, maxRetries, retryDelay, verbose, trace)
 
@@ -771,7 +1011,7 @@ exports.init = api => {
   }
 
   // 簡化的下載函數
-  const downloadWithAria2 = async (remoteUrl, localPath, targetName, api) => {
+  const downloadWithAria2 = async (remoteUrl, localPath, targetName, api, username, password) => {
     const aria2cPath = api.getConfig('aria2Path')
     const speedLimit = api.getConfig('speedLimit')
     const overwrite = api.getConfig('overwrite')
@@ -814,6 +1054,12 @@ exports.init = api => {
       '--human-readable=true',
       '--file-allocation=none'
     ]
+
+    // 添加认证信息
+    if (username && password) {
+      args.push(`--http-user="${username}"`)
+      args.push(`--http-passwd="${password}"`)
+    }
 
     if (speedLimit > 0) {
       args.push(`--max-overall-download-limit=${speedLimit}K`)
@@ -913,7 +1159,7 @@ exports.init = api => {
       try {
         // 檢查服務器是否可用
         const apiUrl = new URL(target.remoteAddress)
-        const serverAvailable = await checkServerAvailable(apiUrl)
+        const serverAvailable = await checkServerAvailable(apiUrl, target.username, target.password)
         
         if (!serverAvailable) {
           if (debug) {
@@ -938,7 +1184,7 @@ exports.init = api => {
         }
 
         // 嘗試下載
-        await downloadWithAria2(remoteFileUrl, failedFile.localPath, targetName, api)
+        await downloadWithAria2(remoteFileUrl, failedFile.localPath, targetName, api, target.username, target.password)
 
         // 下載成功
         stats.succeeded++
@@ -1123,13 +1369,16 @@ exports.init = api => {
     const debug = api.getConfig('debug')
     const verbose = api.getConfig('verboseDebug')
     const trace = api.getConfig('traceDebug')
-    const excludeFolders = api.getConfig('excludeFolders').split(',').map(folder => folder.trim())
-    const excludeExts = api.getConfig('excludeFiles').split(',').map(ext => ext.trim().toLowerCase())
     const mirrorMode = api.getConfig('mirrorMode')
     const fileDelay = api.getConfig('fileDelay')
     const overwrite = api.getConfig('overwrite')
     const targetRoot = target.localDestination
     const targetName = target.name
+    
+    // 獲取合併的排除設置
+    const excludeSettings = getExcludeSettings(target)
+    const excludeFolders = excludeSettings.excludeFolders
+    const excludeExts = excludeSettings.excludeFiles
     
     // 解析優先模式
     const priorityPatterns = (target.priorityPatterns || '*.mp4,*.mkv,*.avi,*.jpg,*.png,*.pdf')
@@ -1194,7 +1443,7 @@ exports.init = api => {
         fullRemoteUrl = baseUrl + cleanPath + '/'
       }
 
-      const fileList = await getRemoteFileList(fullRemoteUrl, targetName, api)
+      const fileList = await getRemoteFileList(fullRemoteUrl, targetName, api, target.username, target.password)
 
       const remoteDirs = []
       const remoteFiles = []
@@ -1207,7 +1456,7 @@ exports.init = api => {
         const fullRemotePath = remotePath === '/' ? name : path.join(remotePath, name).replace(/\\/g, '/')
 
         if (isDir) {
-          // 修復：使用改進的排除文件夾檢查
+          // 使用合併的排除文件夾檢查
           if (!shouldExcludeFolder(fullRemotePath, excludeFolders)) {
             remoteDirs.push({
               name: name,
@@ -1411,7 +1660,7 @@ exports.init = api => {
             const baseUrl = target.remoteAddress.endsWith('/') ? target.remoteAddress : target.remoteAddress + '/'
             const remoteFileUrl = baseUrl + path.join(remotePath, file.name).replace(/\\/g, '/')
 
-            await downloadWithAria2(remoteFileUrl, path.join(dirPath, file.name), targetName, api)
+            await downloadWithAria2(remoteFileUrl, path.join(dirPath, file.name), targetName, api, target.username, target.password)
 
             file.status = 'completed'
             manifest.stats.syncedFiles++
@@ -1705,10 +1954,66 @@ exports.init = api => {
     return stats
   }
 
+  // ==================== 新增：定时窗口检查函数（优化日志频率） ====================
+
+  /**
+   * 检查并更新同步状态（基于定时窗口）- 优化日志输出
+   */
+  const checkScheduledWindow = () => {
+    const enableScheduledSync = api.getConfig('enableScheduledSync')
+    const debug = api.getConfig('debug')
+    
+    // 如果定时同步未启用，直接返回
+    if (!enableScheduledSync) {
+      if (isInScheduledWindow) {
+        isInScheduledWindow = false
+        if (debug) {
+          api.log('[sync] Scheduled sync disabled')
+        }
+      }
+      return
+    }
+
+    const nowInWindow = isWithinScheduledWindow()
+    const now = Date.now()
+    
+    // 状态变化时记录日志
+    if (nowInWindow !== isInScheduledWindow) {
+      isInScheduledWindow = nowInWindow
+      lastWindowLogTime = now
+      const startTime = api.getConfig('syncStartTime') || '00:30'
+      const endTime = api.getConfig('syncEndTime') || '08:30'
+      
+      if (isInScheduledWindow) {
+        api.log(`[sync] Entered scheduled window (${startTime} - ${endTime})`)
+      } else {
+        api.log(`[sync] Exited scheduled window (${startTime} - ${endTime})`)
+      }
+    } 
+    // 状态未变化但定时启用且不在窗口内，限制日志频率
+    else if (!nowInWindow && debug && (now - lastWindowLogTime) >= WINDOW_LOG_INTERVAL) {
+      // 每隔5分钟输出一次提醒
+      const startTime = api.getConfig('syncStartTime') || '00:30'
+      const endTime = api.getConfig('syncEndTime') || '08:30'
+      const nextWindow = getNextScheduledWindowStart()
+      const timeUntil = Math.round((nextWindow - now) / (60 * 1000))
+      
+      api.log(`[sync] Outside scheduled window (${startTime} - ${endTime}), next window in ~${timeUntil} minutes`)
+      lastWindowLogTime = now
+    }
+  }
+
   // ==================== 主同步循環 ====================
 
   const runSync = async () => {
+    // 总开关检查
     if (!api.getConfig('enableSync')) {
+      return
+    }
+
+    // 定时窗口检查
+    if (!shouldRunSync()) {
+      // 不在窗口内时不执行同步，也不输出日志（因为 checkScheduledWindow 已经处理了日志）
       return
     }
 
@@ -1728,14 +2033,17 @@ exports.init = api => {
         return
       }
 
-      const sortedTargets = [...syncTargets].sort((a, b) => {
+      // 過濾出已啟用的目標，並按優先級排序
+      const enabledTargets = syncTargets.filter(target => target.enabled !== false) // 預設為 true
+      const sortedTargets = [...enabledTargets].sort((a, b) => {
         const priorityA = a.priority !== undefined ? a.priority : 1
         const priorityB = b.priority !== undefined ? b.priority : 1
         return priorityA - priorityB
       })
 
       if (debug) {
-        api.log(`[sync] Starting sync with ${sortedTargets.length} targets (priority order)`)
+        const disabledCount = syncTargets.length - enabledTargets.length
+        api.log(`[sync] Starting sync with ${enabledTargets.length} enabled targets (${disabledCount} disabled) in priority order`)
       }
 
       for (const target of sortedTargets) {
@@ -1777,7 +2085,7 @@ exports.init = api => {
           }
 
           const apiUrl = new URL(target.remoteAddress)
-          const serverAvailable = await checkServerAvailable(apiUrl)
+          const serverAvailable = await checkServerAvailable(apiUrl, target.username, target.password)
           
           if (!serverAvailable) {
             api.log(`[sync] Server unavailable for target "${target.name}" - will retry later`)
@@ -1822,6 +2130,9 @@ exports.init = api => {
       return
     }
 
+    // 更新定时窗口状态（会控制日志频率）
+    checkScheduledWindow()
+
     const interval = api.getConfig('syncInterval')
     
     if (interval !== currentInterval) {
@@ -1854,17 +2165,26 @@ exports.init = api => {
     }
   }
 
+  // 主定时器（每分钟检查一次）
   syncTimer = api.setInterval(() => {
     checkSync().catch(err => {
       api.log(`[error] Sync check failed: ${err.message}`)
     })
   }, 60 * 1000)
 
+  // 新增：定时窗口检查定时器（每30秒检查一次，并限制日志频率）
+  scheduledSyncTimer = api.setInterval(() => {
+    if (api.getConfig('enableScheduledSync')) {
+      checkScheduledWindow()
+    }
+  }, 30 * 1000)
+
   if (api.getConfig('enableSync')) {
     checkIncompleteSyncs().catch(err => {
       api.log(`[error] Failed to check incomplete syncs: ${err.message}`)
     })
     
+    // 延迟3秒后执行初始同步
     setTimeout(() => {
       runSync().catch(err => {
         api.log(`[error] Initial sync failed: ${err.message}`)
@@ -1877,6 +2197,10 @@ exports.init = api => {
       if (syncTimer) {
         clearInterval(syncTimer)
         syncTimer = null
+      }
+      if (scheduledSyncTimer) {
+        clearInterval(scheduledSyncTimer)
+        scheduledSyncTimer = null
       }
     },
     
@@ -1894,10 +2218,20 @@ exports.init = api => {
         const interval = api.getConfig('syncInterval')
         const mirrorMode = api.getConfig('mirrorMode')
         const enableSync = api.getConfig('enableSync')
+        const enableScheduledSync = api.getConfig('enableScheduledSync')
+        const syncStartTime = api.getConfig('syncStartTime') || '00:30'
+        const syncEndTime = api.getConfig('syncEndTime') || '08:30'
         
         const nextSync = lastSyncTime > 0 && interval > 0 && enableSync
           ? new Date(lastSyncTime + interval * 60 * 1000).toISOString()
           : 'Not scheduled'
+
+        // 计算下次窗口开始时间
+        let nextWindowStart = null
+        if (enableScheduledSync) {
+          const nextStart = getNextScheduledWindowStart()
+          nextWindowStart = nextStart.toISOString()
+        }
 
         const targetsStatus = []
         for (const target of syncTargets) {
@@ -1912,9 +2246,15 @@ exports.init = api => {
           if (rootManifest) {
             targetsStatus.push({
               name: target.name,
+              enabled: target.enabled !== false, // 顯示啟用狀態
               destination: target.localDestination,
               priority: target.priority !== undefined ? target.priority : 1,
-              priorityPatterns: target.priorityPatterns || '*.mp4,*.mkv,*.avi,*.jpg,*.png,*.pdf',
+              priorityPatterns: target.priorityPatterns || '*.htm,*.html,*.js,*.css,*.ttf,*.woff',
+              username: target.username ? '******' : null,
+              hasAuth: !!(target.username && target.password),
+              // 顯示目標特定的排除設置
+              targetExcludeFiles: target.targetExcludeFiles || '',
+              targetExcludeFolders: target.targetExcludeFolders || '',
               totalDirs: syncState.totalDirs || rootManifest.stats.totalDirs || 0,
               totalFiles: rootManifest.stats.totalFiles || 0,
               totalSize: rootManifest.stats.totalSize || 0,
@@ -1930,9 +2270,14 @@ exports.init = api => {
           } else {
             targetsStatus.push({
               name: target.name,
+              enabled: target.enabled !== false,
               destination: target.localDestination,
               priority: target.priority !== undefined ? target.priority : 1,
-              priorityPatterns: target.priorityPatterns || '*.mp4,*.mkv,*.avi,*.jpg,*.png,*.pdf',
+              priorityPatterns: target.priorityPatterns || '*.htm,*.html,*.js,*.css,*.ttf,*.woff',
+              username: target.username ? '******' : null,
+              hasAuth: !!(target.username && target.password),
+              targetExcludeFiles: target.targetExcludeFiles || '',
+              targetExcludeFolders: target.targetExcludeFolders || '',
               status: 'not_scanned'
             })
           }
@@ -1940,6 +2285,11 @@ exports.init = api => {
         
         return {
           enableSync: enableSync,
+          enableScheduledSync: enableScheduledSync,
+          syncStartTime: syncStartTime,
+          syncEndTime: syncEndTime,
+          isInScheduledWindow: isInScheduledWindow,
+          nextWindowStart: nextWindowStart,
           lastSyncTime: lastSyncTime > 0 ? new Date(lastSyncTime).toISOString() : 'Never',
           nextSyncTime: nextSync,
           interval: interval,
@@ -2135,13 +2485,13 @@ exports.init = api => {
         
         try {
           const apiUrl = new URL(target.remoteAddress)
-          const serverAvailable = await checkServerAvailable(apiUrl)
+          const serverAvailable = await checkServerAvailable(apiUrl, target.username, target.password)
           
           if (!serverAvailable) {
             return { error: 'Server unavailable' }
           }
           
-          const fileList = await getRemoteFileList(target.remoteAddress, target.name, api)
+          const fileList = await getRemoteFileList(target.remoteAddress, target.name, api, target.username, target.password)
           
           const dirs = fileList.filter(item => item.n.endsWith('/')).length
           const files = fileList.length - dirs
@@ -2152,7 +2502,8 @@ exports.init = api => {
             destination: target.localDestination,
             dirs: dirs,
             files: files,
-            total: fileList.length
+            total: fileList.length,
+            auth: !!(target.username && target.password)
           }
         } catch (error) {
           return { error: error.message }
@@ -2226,6 +2577,96 @@ exports.init = api => {
           completion: priorityStats.total > 0 
             ? Math.round((priorityStats.completed / priorityStats.total) * 100) 
             : 0
+        }
+      },
+
+      // 新增：獲取目標的完整排除設置
+      async getTargetExcludeSettings({ targetName }) {
+        const syncTargets = api.getConfig('syncTargets') || []
+        const target = syncTargets.find(t => t.name === targetName)
+        
+        if (!target) {
+          return { error: 'Target not found' }
+        }
+
+        const globalExcludeFiles = api.getConfig('excludeFiles')
+        const globalExcludeFolders = api.getConfig('excludeFolders')
+        const excludeSettings = getExcludeSettings(target)
+
+        return {
+          target: targetName,
+          enabled: target.enabled !== false,
+          global: {
+            excludeFiles: globalExcludeFiles,
+            excludeFolders: globalExcludeFolders
+          },
+          targetSpecific: {
+            excludeFiles: target.targetExcludeFiles || '',
+            excludeFolders: target.targetExcludeFolders || ''
+          },
+          merged: {
+            excludeFiles: excludeSettings.excludeFiles,
+            excludeFolders: excludeSettings.excludeFolders
+          }
+        }
+      },
+
+      // 新增：啟用/禁用特定目標
+      async toggleTarget({ targetName, enabled }) {
+        const syncTargets = api.getConfig('syncTargets') || []
+        const targetIndex = syncTargets.findIndex(t => t.name === targetName)
+        
+        if (targetIndex === -1) {
+          return { error: 'Target not found' }
+        }
+
+        // 更新配置
+        const currentConfig = api.getConfig()
+        currentConfig.syncTargets[targetIndex].enabled = enabled
+        
+        api.log(`[sync] Target "${targetName}" ${enabled ? 'enabled' : 'disabled'}`)
+        
+        return { 
+          message: `Target "${targetName}" ${enabled ? 'enabled' : 'disabled'} successfully`,
+          target: currentConfig.syncTargets[targetIndex]
+        }
+      },
+
+      // 新增：獲取所有目標的啟用狀態
+      async getTargetsStatus() {
+        const syncTargets = api.getConfig('syncTargets') || []
+        
+        return {
+          total: syncTargets.length,
+          enabled: syncTargets.filter(t => t.enabled !== false).length,
+          disabled: syncTargets.filter(t => t.enabled === false).length,
+          targets: syncTargets.map(t => ({
+            name: t.name,
+            enabled: t.enabled !== false,
+            priority: t.priority || 1,
+            destination: t.localDestination
+          }))
+        }
+      },
+
+      // 新增：获取定时设置
+      async getScheduleSettings() {
+        return {
+          enableScheduledSync: api.getConfig('enableScheduledSync'),
+          syncStartTime: api.getConfig('syncStartTime') || '00:30',
+          syncEndTime: api.getConfig('syncEndTime') || '08:30',
+          isInScheduledWindow: isInScheduledWindow,
+          nextWindowStart: getNextScheduledWindowStart().toISOString(),
+          nextWindowEnd: getNextScheduledWindowEnd().toISOString()
+        }
+      },
+
+      // 新增：手动触发窗口检查
+      async checkScheduledWindow() {
+        checkScheduledWindow()
+        return {
+          isInScheduledWindow: isInScheduledWindow,
+          message: isInScheduledWindow ? 'Currently in scheduled window' : 'Outside scheduled window'
         }
       }
     }
