@@ -1,4 +1,4 @@
-exports.version = 4.1
+exports.version = 4.2
 exports.description = "Sync folders from remote HFS3 server (multi-target with independent destinations)"
 exports.apiRequired = 10
 exports.repo = "Hug3O/Filessync-plugin"
@@ -146,11 +146,11 @@ exports.config = {
     label: 'Aria2c Path',
     helperText: 'Path to aria2c executable.'
   },
-  fileThreads: {
+  concurrentDownloads: {
     type: 'number',
-    label: 'File Threads',
-    defaultValue: 3,
-    helperText: 'Number of threads per file download (multi-threading for single file)',
+    label: 'Concurrent Downloads',
+    defaultValue: 1,
+    helperText: 'Number of files to download simultaneously (parallel downloads)',
     xs: 6,
     min: 1,
     max: 16
@@ -207,15 +207,15 @@ exports.config = {
     defaultValue: 'cache,temp,node_modules,.git,.svn,__pycache__',
     helperText: 'Comma-separated list of folder names to exclude from sync (global)'
   },
-  quickScanThreshold: {
+quickScanThreshold: {
     type: 'number',
     label: 'Quick Scan Threshold (minutes)',
-    defaultValue: 5,
-    helperText: 'If folder mtime is within this range, perform deep scan. Otherwise quick check.',
+    defaultValue: 4320,
+    helperText: 'How long to trust quick scan since last folder change. For large backups (100K+ files): recommend 1440 (1 day) or 4320 (3 days). 0 = always deep scan, max 43200 (30 days)',
     xs: 6,
-    min: 1,
-    max: 60
-  },
+    min: 0,
+    max: 43200
+},
   checkpointInterval: {
     type: 'number',
     label: 'Checkpoint Interval (seconds)',
@@ -264,12 +264,16 @@ exports.init = api => {
   let currentInterval = api.getConfig('syncInterval')
   // 新增：定时检查定时器
   let scheduledSyncTimer = null
+  // 新增：窗口检查定时器
+  let windowCheckTimer = null
   // 新增：当前是否在定时窗口内
   let isInScheduledWindow = false
   // 新增：上次窗口状态日志时间（用于限制日志频率）
   let lastWindowLogTime = 0
-  // 新增：窗口状态日志间隔（6600分钟）
+  // 新增：窗口状态日志间隔（60分钟）
   const WINDOW_LOG_INTERVAL = 60 * 60 * 1000
+  // 新增：停止同步標誌
+  let shouldStopSync = false
 
   // 文件名定義
   const getManifestFileName = (targetName) => `sync.${targetName}.manifest.json`
@@ -1010,7 +1014,7 @@ exports.init = api => {
     }
   }
 
-  // 簡化的下載函數
+  // 修改：下載函數 - 使用單線程 (split=1)，因為有重試機制
   const downloadWithAria2 = async (remoteUrl, localPath, targetName, api, username, password) => {
     const aria2cPath = api.getConfig('aria2Path')
     const speedLimit = api.getConfig('speedLimit')
@@ -1019,7 +1023,6 @@ exports.init = api => {
     const trace = api.getConfig('traceDebug')
     const maxRetries = api.getConfig('maxRetries')
     const retryDelay = api.getConfig('retryDelay')
-    const fileThreads = api.getConfig('fileThreads')
 
     const dir = path.dirname(localPath)
     if (!fs.existsSync(dir)) {
@@ -1035,6 +1038,7 @@ exports.init = api => {
 
     const encodedRemoteUrl = remoteUrl.replace(/ /g, '%20')
 
+    // 單線程下載 (split=1)，因為有重試機制，多線程反而可能造成問題
     let args = [
       `"${aria2cPath}"`,
       `--dir="${dir}"`,
@@ -1045,11 +1049,10 @@ exports.init = api => {
       `--max-tries=${maxRetries}`,
       `--retry-wait=${retryDelay}`,
       '--max-concurrent-downloads=1',
-      `--split=${fileThreads}`,
-      `--min-split-size=1M`,
+      '--split=1',  // 單線程下載
       '--timeout=60',
       '--connect-timeout=30',
-      `--max-connection-per-server=${fileThreads}`,
+      '--max-connection-per-server=1',  // 每個伺服器只用1個連接
       '--disable-ipv6=true',
       '--human-readable=true',
       '--file-allocation=none'
@@ -1363,9 +1366,125 @@ exports.init = api => {
     return false // 不需要同步
   }
 
+  // ==================== 並行下載輔助函數 ====================
+
+  /**
+   * 並行下載多個文件
+   * @param {Array} files - 要下載的文件列表
+   * @param {Function} downloadFn - 單個文件下載函數
+   * @param {number} concurrency - 並行數量
+   * @param {Function} shouldStopFn - 停止檢查函數
+   * @param {Object} target - 目標配置
+   * @param {Object} manifest - manifest 對象
+   * @param {string} dirPath - 目錄路徑
+   * @param {string} remotePath - 遠程路徑
+   * @param {Object} stats - 統計對象
+   * @param {string} targetRoot - 目標根目錄
+   */
+  const downloadFilesInParallel = async (files, downloadFn, concurrency, shouldStopFn, target, manifest, dirPath, remotePath, stats, targetRoot) => {
+    const targetName = target.name
+    const debug = api.getConfig('debug')
+    const fileDelay = api.getConfig('fileDelay')
+    
+    let activeDownloads = 0
+    let fileIndex = 0
+    let stopped = false
+
+    return new Promise((resolve) => {
+      const downloadNext = async () => {
+        // 檢查是否應該停止
+        if (stopped || (shouldStopFn && shouldStopFn())) {
+          stopped = true
+          // 等待所有進行中的下載完成
+          if (activeDownloads === 0) {
+            resolve()
+          }
+          return
+        }
+
+        // 沒有更多文件要下載
+        if (fileIndex >= files.length) {
+          // 等待所有進行中的下載完成
+          if (activeDownloads === 0) {
+            resolve()
+          }
+          return
+        }
+
+        // 達到並行上限
+        if (activeDownloads >= concurrency) {
+          return
+        }
+
+        const file = files[fileIndex++]
+        
+        // 跳過已完成的文件
+        if (file.status === 'completed') {
+          downloadNext()
+          return
+        }
+
+        activeDownloads++
+
+        try {
+          file.status = 'downloading'
+          saveDirectoryManifest(dirPath, targetName, manifest)
+
+          await downloadFn(file)
+
+          file.status = 'completed'
+          manifest.stats.syncedFiles++
+          manifest.stats.syncedSize += file.size
+          
+          stats.downloaded.push(`[${targetName}] ${path.join(remotePath, file.name)}`)
+          stats.totalBytes += file.size
+
+          removeFromFailedQueue(targetRoot, targetName, path.join(remotePath, file.name))
+
+        } catch (error) {
+          file.attempts++
+          
+          if (error.message.includes('404')) {
+            file.status = 'completed'
+            file.attempts = 0
+            api.log(`[warn] [${targetName}] File not found (404), skipping: ${file.name}`)
+          } else {
+            file.status = 'failed'
+            api.log(`[error] [${targetName}] Failed to download ${file.name}: ${error.message}`)
+            addToFailedQueue(targetRoot, targetName, {
+              targetName: targetName,
+              remotePath: path.join(remotePath, file.name),
+              localPath: path.join(dirPath, file.name),
+              size: file.size,
+              attempts: file.attempts,
+              isPriority: file.isPriority
+            }, error)
+            stats.errors.push({ target: targetName, file: path.join(remotePath, file.name), error: error.message })
+          }
+        } finally {
+          saveDirectoryManifest(dirPath, targetName, manifest)
+          activeDownloads--
+
+          // 文件間延遲
+          if (fileDelay > 0) {
+            await new Promise(r => setTimeout(r, fileDelay))
+          }
+
+          // 繼續下載下一個文件
+          downloadNext()
+        }
+      }
+
+      // 啟動初始的並行下載
+      for (let i = 0; i < concurrency; i++) {
+        downloadNext()
+      }
+    })
+  }
+
   // ==================== 核心功能：處理目錄 ====================
 
-  const processDirectory = async (target, dirPath, remotePath, stats, syncState, scanType = 'deep') => {
+  const processDirectory = async (target, dirPath, remotePath, stats, syncState, scanType = 'deep', shouldStopFn) => {
     const debug = api.getConfig('debug')
     const verbose = api.getConfig('verboseDebug')
     const trace = api.getConfig('traceDebug')
@@ -1374,6 +1493,28 @@ exports.init = api => {
     const overwrite = api.getConfig('overwrite')
     const targetRoot = target.localDestination
     const targetName = target.name
+    const concurrentDownloads = api.getConfig('concurrentDownloads') || 3
+    
+    // 新增：檢查是否應該停止的輔助函數
+    const checkShouldStop = () => {
+      if (shouldStopFn && shouldStopFn()) {
+        return true
+      }
+      // 檢查定時窗口
+      const enableScheduledSync = api.getConfig('enableScheduledSync')
+      if (enableScheduledSync && !isWithinScheduledWindow()) {
+        return true
+      }
+      return false
+    }
+    
+    // 在函數開始時檢查
+    if (checkShouldStop()) {
+      if (debug) {
+        api.log(`[sync] [${targetName}] Stopping directory processing at ${remotePath} (window ended)`)
+      }
+      return { subDirs: [], shouldContinue: false, stopped: true }
+    }
     
     // 獲取合併的排除設置
     const excludeSettings = getExcludeSettings(target)
@@ -1427,11 +1568,18 @@ exports.init = api => {
         manifest.scanComplete = true
         saveDirectoryManifest(dirPath, targetName, manifest)
 
-        return { subDirs: manifest.subDirs.map(d => ({
-          name: d.name,
-          remotePath: path.join(remotePath, d.name).replace(/\\/g, '/'),
-          localPath: path.join(dirPath, d.name)
-        })), shouldContinue: true }
+return { 
+    subDirs: manifest.subDirs.map(d => {
+        const cleanRemotePath = remotePath === '/' ? '' : remotePath
+        const subRemotePath = cleanRemotePath ? `${cleanRemotePath}/${d.name}` : d.name
+        return {
+            name: d.name,
+            remotePath: subRemotePath,  // ✅ 修复：正确构建路径
+            localPath: path.join(dirPath, d.name)
+        }
+    }), 
+    shouldContinue: true 
+}
       }
 
       let fullRemoteUrl
@@ -1647,57 +1795,32 @@ exports.init = api => {
           return 0
         })
 
-        for (const file of pendingFiles) {
-          if (syncState && syncState.shouldStop) {
-            if (debug) api.log(`[sync] [${targetName}] Sync interrupted, saving checkpoint...`)
-            return { subDirs: newSubDirs, shouldContinue: false }
+        // 使用並行下載
+        const downloadFileFn = async (file) => {
+          const baseUrl = target.remoteAddress.endsWith('/') ? target.remoteAddress : target.remoteAddress + '/'
+          const remoteFileUrl = baseUrl + path.join(remotePath, file.name).replace(/\\/g, '/')
+          await downloadWithAria2(remoteFileUrl, path.join(dirPath, file.name), targetName, api, target.username, target.password)
+        }
+
+        await downloadFilesInParallel(
+          pendingFiles,
+          downloadFileFn,
+          concurrentDownloads,
+          checkShouldStop,
+          target,
+          manifest,
+          dirPath,
+          remotePath,
+          stats,
+          targetRoot
+        )
+
+        // 檢查是否因窗口結束而停止
+        if (checkShouldStop()) {
+          if (debug) {
+            api.log(`[sync] [${targetName}] Stopping download in ${remotePath} due to window end`)
           }
-
-          try {
-            file.status = 'downloading'
-            saveDirectoryManifest(dirPath, targetName, manifest)
-
-            const baseUrl = target.remoteAddress.endsWith('/') ? target.remoteAddress : target.remoteAddress + '/'
-            const remoteFileUrl = baseUrl + path.join(remotePath, file.name).replace(/\\/g, '/')
-
-            await downloadWithAria2(remoteFileUrl, path.join(dirPath, file.name), targetName, api, target.username, target.password)
-
-            file.status = 'completed'
-            manifest.stats.syncedFiles++
-            manifest.stats.syncedSize += file.size
-            
-            stats.downloaded.push(`[${targetName}] ${path.join(remotePath, file.name)}`)
-            stats.totalBytes += file.size
-
-            removeFromFailedQueue(targetRoot, targetName, path.join(remotePath, file.name))
-
-          } catch (error) {
-            file.attempts++
-            
-            if (error.message.includes('404')) {
-              file.status = 'completed'
-              file.attempts = 0
-              api.log(`[warn] [${targetName}] File not found (404), skipping: ${file.name}`)
-            } else {
-              file.status = 'failed'
-              api.log(`[error] [${targetName}] Failed to download ${file.name}: ${error.message}`)
-              addToFailedQueue(targetRoot, targetName, {
-                targetName: targetName,
-                remotePath: path.join(remotePath, file.name),
-                localPath: path.join(dirPath, file.name),
-                size: file.size,
-                attempts: file.attempts,
-                isPriority: file.isPriority
-              }, error)
-              stats.errors.push({ target: targetName, file: path.join(remotePath, file.name), error: error.message })
-            }
-          } finally {
-            saveDirectoryManifest(dirPath, targetName, manifest)
-            
-            if (fileDelay > 0) {
-              await new Promise(resolve => setTimeout(resolve, fileDelay))
-            }
-          }
+          return { subDirs: newSubDirs, shouldContinue: false, stopped: true }
         }
       }
 
@@ -1708,12 +1831,19 @@ exports.init = api => {
       manifest.scanComplete = true
       saveDirectoryManifest(dirPath, targetName, manifest)
 
-      if (debug && manifest.stats.totalFiles > 0) {
-        const downloadedCount = manifest.stats.syncedFiles - (manifest.stats.skippedFiles || 0)
-        api.log(`[sync] [${targetName}] ${remotePath === '/' ? 'root' : path.basename(remotePath)}: ${manifest.stats.syncedFiles}/${manifest.stats.totalFiles} files (${formatBytes(manifest.stats.syncedSize)})`)
-      }
-
-      return { subDirs: newSubDirs, shouldContinue: true }
+// ✅ 修复后的代码
+return { 
+    subDirs: manifest.subDirs.map(d => {
+        const cleanRemotePath = remotePath === '/' ? '' : remotePath
+        const subRemotePath = cleanRemotePath ? `${cleanRemotePath}/${d.name}` : d.name
+        return {
+            name: d.name,
+            remotePath: subRemotePath,  // ✅ 修复：正确构建路径
+            localPath: path.join(dirPath, d.name)
+        }
+    }), 
+    shouldContinue: true 
+}
 
     } catch (error) {
       api.log(`[error] [${targetName}] Failed to process directory ${remotePath}: ${error.message}`)
@@ -1721,13 +1851,26 @@ exports.init = api => {
     }
   }
 
-  // ==================== 處理目標 ====================
+// ==================== 处理目标 ====================
 
-  const processTarget = async (target, targetRoot) => {
+const processTarget = async (target, targetRoot, shouldStopFn) => {
     const debug = api.getConfig('debug')
     const checkpointInterval = api.getConfig('checkpointInterval') * 1000
     const quickScanThreshold = api.getConfig('quickScanThreshold')
     const targetName = target.name
+    
+    // 新增：检查是否应该停止的辅助函数
+    const checkShouldStop = () => {
+      if (shouldStopFn && shouldStopFn()) {
+        return true
+      }
+      // 检查定时窗口
+      const enableScheduledSync = api.getConfig('enableScheduledSync')
+      if (enableScheduledSync && !isWithinScheduledWindow()) {
+        return true
+      }
+      return false
+    }
     
     if (debug) {
       api.log(`[sync] Starting processing for target: ${targetName}`)
@@ -1747,20 +1890,35 @@ exports.init = api => {
     let completedDirs = new Set(syncState.completedDirs || [])
 
     if (syncState.currentQueue && syncState.currentQueue.length > 0) {
+      // 从检查点恢复时，需要更详细地重建队列
       processQueue = syncState.currentQueue.map(dirPath => {
         const fullPath = path.join(targetRoot, dirPath)
+        const remotePath = '/' + dirPath.replace(/\\/g, '/')
+        
+        // 尝试从 manifest 获取子目录信息
+        const dirManifest = loadDirectoryManifest(fullPath, targetName)
+        
         return {
           localPath: fullPath,
-          remotePath: '/' + dirPath.replace(/\\/g, '/'),
+          remotePath: remotePath,
           name: path.basename(dirPath),
-          retryCount: 0
+          retryCount: 0,
+          // 如果 manifest 有子目录但还没处理，标记为需要展开
+          subDirs: dirManifest ? dirManifest.subDirs.filter(d => d.status === 'pending') : []
         }
       })
+      
       if (debug) {
-        api.log(`[sync] [${targetName}] Resuming from checkpoint: ${processQueue.length} directories remaining`)
-        api.log(`[sync] [${targetName}] Progress: ${completedDirs.size} directories completed, ${processQueue.length} remaining`)
+        api.log(`[sync] [${targetName}] Resuming from checkpoint: ${processQueue.length} directories in queue`)
+        api.log(`[sync] [${targetName}] Progress: ${completedDirs.size} completed, ${pendingDirs.size} pending, ${processQueue.length} in queue`)
       }
     } else {
+      // 在扫描根目录前检查是否应该停止
+      if (checkShouldStop()) {
+        if (debug) api.log(`[sync] [${targetName}] Stopping before initial scan`)
+        return { downloaded: [], deleted: [], errors: [], totalBytes: 0, stopped: true }
+      }
+      
       const rootManifest = loadDirectoryManifest(targetRoot, targetName)
       const scanType = checkFolderNeedDeepScan(targetRoot, targetName, rootManifest, quickScanThreshold)
       
@@ -1774,18 +1932,28 @@ exports.init = api => {
         '/', 
         { downloaded: [], deleted: [], errors: [], totalBytes: 0 },
         null,
-        scanType
+        scanType,
+        shouldStopFn
       )
 
+      // 重要：从 manifest 获取所有待处理的子目录（包括深层目录）
       processQueue = rootResult.subDirs.map(dir => ({
         localPath: dir.localPath,
         remotePath: dir.remotePath,
         name: dir.name,
-        retryCount: 0
+        retryCount: 0,
+        subDirs: []
       }))
 
-      syncState.totalDirs = rootResult.subDirs.length
-      syncState.pendingDirs = rootResult.subDirs.map(d => path.relative(targetRoot, d.localPath).replace(/\\/g, '/'))
+      // 计算总目录数 - 需要递归计算所有子目录
+      const countAllDirs = (dirs) => {
+        let count = dirs.length
+        // 这里我们无法提前知道所有子目录，先设置一个初始值
+        return count
+      }
+      
+      syncState.totalDirs = countAllDirs(processQueue)
+      syncState.pendingDirs = processQueue.map(d => path.relative(targetRoot, d.localPath).replace(/\\/g, '/'))
     }
 
     const stats = {
@@ -1801,15 +1969,37 @@ exports.init = api => {
     const maxConsecutiveErrors = 5
     let hasError = false
 
+    // 跟踪总目录数和已完成数
+    let totalDirsDiscovered = syncState.totalDirs || 0
+    let totalDirsCompleted = completedDirs.size
+
     while (processQueue.length > 0 && shouldContinue) {
-      // 按目錄深度排序，先處理較淺的目錄
+      // 在每个循环开始时检查是否应该停止
+      if (checkShouldStop()) {
+        if (debug) {
+          api.log(`[sync] [${targetName}] Stopping sync for target (window ended)`)
+        }
+        shouldContinue = false
+        break
+      }
+      
+      // 按目录深度排序，先处理较浅的目录
       processQueue.sort((a, b) => {
-        const depthA = a.remotePath.split('/').length
-        const depthB = b.remotePath.split('/').length
+        const depthA = a.remotePath.split('/').filter(p => p).length
+        const depthB = b.remotePath.split('/').filter(p => p).length
         return depthA - depthB
       })
 
       const dir = processQueue.shift()
+      
+      // 安全检查：如果 remotePath 未定义则跳过
+      if (!dir || !dir.remotePath) {
+        if (debug) {
+          api.log(`[sync] [${targetName}] Skipping invalid directory entry`)
+        }
+        continue
+      }
+      
       const dirRelPath = path.relative(targetRoot, dir.localPath).replace(/\\/g, '/')
 
       if (processedDirs.has(dirRelPath) || inProgressDirs.has(dirRelPath) || completedDirs.has(dirRelPath)) {
@@ -1820,7 +2010,7 @@ exports.init = api => {
       pendingDirs.delete(dirRelPath)
 
       if (debug) {
-        api.log(`[sync] [${targetName}] Processing: ${dirRelPath} (${processQueue.length} remaining)`)
+        api.log(`[sync] [${targetName}] Processing: ${dirRelPath} (${processQueue.length} in queue, ${totalDirsCompleted} completed)`)
       }
 
       const dirManifest = loadDirectoryManifest(dir.localPath, targetName)
@@ -1832,7 +2022,8 @@ exports.init = api => {
         dir.remotePath,
         stats,
         { shouldStop: false },
-        scanType
+        scanType,
+        shouldStopFn
       )
 
       if (result.error) {
@@ -1850,15 +2041,25 @@ exports.init = api => {
         consecutiveErrors = 0
       }
 
-      if (!result.shouldContinue) {
+      if (!result.shouldContinue || result.stopped) {
         shouldContinue = false
         processQueue.unshift(dir)
         break
       }
 
-      for (const subDir of result.subDirs) {
+      // 添加子目录到队列
+      let newDirsAdded = 0
+      for (const subDir of (result.subDirs || [])) {
+        // 安全检查：确保所有必要字段存在
+        if (!subDir || !subDir.name || !subDir.localPath || !subDir.remotePath) {
+          continue
+        }
+        
         const subDirRelPath = path.relative(targetRoot, subDir.localPath).replace(/\\/g, '/')
-        if (!processedDirs.has(subDirRelPath) && !inProgressDirs.has(subDirRelPath) && !completedDirs.has(subDirRelPath)) {
+        if (!processedDirs.has(subDirRelPath) && 
+            !inProgressDirs.has(subDirRelPath) && 
+            !completedDirs.has(subDirRelPath) &&
+            !processQueue.some(q => q.localPath === subDir.localPath)) {
           processQueue.push({
             localPath: subDir.localPath,
             remotePath: subDir.remotePath,
@@ -1866,44 +2067,58 @@ exports.init = api => {
             retryCount: 0
           })
           pendingDirs.add(subDirRelPath)
+          newDirsAdded++
         }
+      }
+
+      // 更新总目录数
+      if (newDirsAdded > 0) {
+        totalDirsDiscovered += newDirsAdded
       }
 
       inProgressDirs.delete(dirRelPath)
       processedDirs.add(dirRelPath)
       
-      if (dirManifest && dirManifest.stats.syncedFiles === dirManifest.stats.totalFiles) {
+      // 检查目录是否完全同步完成
+      const updatedManifest = loadDirectoryManifest(dir.localPath, targetName)
+      if (updatedManifest && updatedManifest.scanComplete && 
+          updatedManifest.stats.syncedFiles === updatedManifest.stats.totalFiles) {
         completedDirs.add(dirRelPath)
+        totalDirsCompleted = completedDirs.size
       }
 
       const now = Date.now()
       if (now - lastCheckpoint >= checkpointInterval) {
+        // 保存检查点时包含所有队列信息
         syncState = {
-          currentQueue: processQueue.map(d => path.relative(targetRoot, d.localPath).replace(/\\/g, '/')),
+          currentQueue: processQueue
+            .filter(d => d && d.localPath)
+            .map(d => path.relative(targetRoot, d.localPath).replace(/\\/g, '/')),
           processedDirs: Array.from(processedDirs),
           inProgressDirs: Array.from(inProgressDirs),
           pendingDirs: Array.from(pendingDirs),
           completedDirs: Array.from(completedDirs),
-          totalDirs: syncState.totalDirs,
-          completedCount: completedDirs.size,
+          totalDirs: totalDirsDiscovered,
+          completedCount: totalDirsCompleted,
           lastCheckpoint: new Date().toISOString()
         }
         saveSyncState(targetRoot, targetName, syncState)
         lastCheckpoint = now
         
         if (debug) {
-          api.log(`[sync] [${targetName}] Checkpoint: ${completedDirs.size} dirs completed, ${processQueue.length} remaining`)
+          api.log(`[sync] [${targetName}] Checkpoint: ${totalDirsCompleted}/${totalDirsDiscovered} dirs completed, ${processQueue.length} in queue`)
         }
       }
     }
 
+    // 更新根 manifest
     const rootManifest = loadDirectoryManifest(targetRoot, targetName)
     if (rootManifest) {
       rootManifest.stats = {
-        totalDirs: completedDirs.size,
+        totalDirs: totalDirsCompleted,
         totalFiles: stats.downloaded.length + stats.errors.length,
         totalSize: stats.totalBytes,
-        syncedDirs: completedDirs.size,
+        syncedDirs: totalDirsCompleted,
         syncedFiles: stats.downloaded.length,
         syncedSize: stats.totalBytes,
         skippedFiles: rootManifest.stats.skippedFiles || 0
@@ -1912,8 +2127,11 @@ exports.init = api => {
       saveDirectoryManifest(targetRoot, targetName, rootManifest)
     }
 
-    const allCompleted = processQueue.length === 0 && shouldContinue && !hasError &&
-                        (syncState.totalDirs === 0 || completedDirs.size === syncState.totalDirs)
+    // 判断是否真正完成：队列为空、没有错误、且所有发现的目录都已完成
+    const allCompleted = shouldContinue && 
+                        !hasError &&
+                        processQueue.length === 0 && 
+                        totalDirsCompleted >= totalDirsDiscovered
 
     if (allCompleted) {
       clearSyncState(targetRoot, targetName)
@@ -1924,23 +2142,29 @@ exports.init = api => {
       saveGlobalState(targetRoot, globalState)
       
       if (debug) {
-        api.log(`[sync] [${targetName}] Target completed`)
+        api.log(`[sync] [${targetName}] Target fully completed: ${totalDirsCompleted} directories`)
       }
     } else {
+      // 保存最终状态
       syncState = {
-        currentQueue: processQueue.map(d => path.relative(targetRoot, d.localPath).replace(/\\/g, '/')),
+        currentQueue: processQueue
+          .filter(d => d && d.localPath)
+          .map(d => path.relative(targetRoot, d.localPath).replace(/\\/g, '/')),
         processedDirs: Array.from(processedDirs),
         inProgressDirs: Array.from(inProgressDirs),
         pendingDirs: Array.from(pendingDirs),
         completedDirs: Array.from(completedDirs),
-        totalDirs: syncState.totalDirs,
-        completedCount: completedDirs.size,
+        totalDirs: totalDirsDiscovered,
+        completedCount: totalDirsCompleted,
         lastCheckpoint: new Date().toISOString()
       }
       saveSyncState(targetRoot, targetName, syncState)
       
       if (debug) {
-        api.log(`[sync] [${targetName}] Paused with ${processQueue.length} directories remaining (${completedDirs.size} completed)`)
+        api.log(`[sync] [${targetName}] Sync not completed. ${totalDirsCompleted}/${totalDirsDiscovered} dirs done, ${processQueue.length} remaining in queue`)
+        if (processQueue.length > 0) {
+          api.log(`[sync] [${targetName}] Next dirs in queue: ${processQueue.slice(0, 3).map(d => d.remotePath).join(', ')}`)
+        }
       }
     }
 
@@ -1992,13 +2216,13 @@ exports.init = api => {
     } 
     // 状态未变化但定时启用且不在窗口内，限制日志频率
     else if (!nowInWindow && debug && (now - lastWindowLogTime) >= WINDOW_LOG_INTERVAL) {
-      // 每隔5分钟输出一次提醒
+      // 每隔60分钟输出一次提醒
       const startTime = api.getConfig('syncStartTime') || '00:30'
       const endTime = api.getConfig('syncEndTime') || '08:30'
       const nextWindow = getNextScheduledWindowStart()
       const timeUntil = Math.round((nextWindow - now) / (60 * 1000))
       
-      api.log(`[sync] Outside scheduled window (${startTime} - ${endTime}), next window in ~${timeUntil} minutes`)
+      api.log(`[sync] Scheduled on (${startTime} - ${endTime}), next in ~${timeUntil} minutes`)
       lastWindowLogTime = now
     }
   }
@@ -2011,15 +2235,22 @@ exports.init = api => {
       return
     }
 
-    // 定时窗口检查
-    if (!shouldRunSync()) {
-      // 不在窗口内时不执行同步，也不输出日志（因为 checkScheduledWindow 已经处理了日志）
+    // 關鍵修改：在開始同步前檢查是否在窗口內
+    const enableScheduledSync = api.getConfig('enableScheduledSync')
+    if (enableScheduledSync && !isWithinScheduledWindow()) {
+      const debug = api.getConfig('debug')
+      if (debug) {
+        api.log('[sync] Skipping sync: outside scheduled window')
+      }
       return
     }
 
     if (isSyncing) {
       return
     }
+    
+    // 重置停止標誌
+    shouldStopSync = false
     
     isSyncing = true
     syncStartTime = Date.now()
@@ -2047,6 +2278,22 @@ exports.init = api => {
       }
 
       for (const target of sortedTargets) {
+        // 在處理每個目標前檢查是否應該停止
+        if (shouldStopSync) {
+          if (debug) {
+            api.log(`[sync] Stopping sync for target "${target.name}" due to window end`)
+          }
+          break
+        }
+        
+        // 檢查是否仍在窗口內（定時同步啟用時）
+        if (enableScheduledSync && !isWithinScheduledWindow()) {
+          if (debug) {
+            api.log(`[sync] Stopping sync: outside scheduled window after processing ${target.name}`)
+          }
+          break
+        }
+        
         try {
           if (!target.localDestination) {
             api.log(`[sync] Target "${target.name}" has no local destination, skipping`)
@@ -2103,7 +2350,8 @@ exports.init = api => {
             }
           }
 
-          await processTarget(target, targetRoot)
+          // 傳入停止檢查函數
+          await processTarget(target, targetRoot, () => shouldStopSync || (enableScheduledSync && !isWithinScheduledWindow()))
 
         } catch (error) {
           api.log(`[error] Failed to process target "${target.name}": ${error.message}`)
@@ -2113,7 +2361,11 @@ exports.init = api => {
       const elapsedTime = (Date.now() - syncStartTime) / 1000
 
       if (debug) {
-        api.log(`[sync] All targets sync completed in ${elapsedTime.toFixed(2)} seconds`)
+        if (shouldStopSync) {
+          api.log(`[sync] Sync stopped early due to window end after ${elapsedTime.toFixed(2)} seconds`)
+        } else {
+          api.log(`[sync] All targets sync completed in ${elapsedTime.toFixed(2)} seconds`)
+        }
       }
 
       lastSyncTime = Date.now()
@@ -2122,6 +2374,7 @@ exports.init = api => {
       api.log(`[error] Sync failed: ${err.message}`)
     } finally {
       isSyncing = false
+      shouldStopSync = false
     }
   }
 
@@ -2133,6 +2386,7 @@ exports.init = api => {
     // 更新定时窗口状态（会控制日志频率）
     checkScheduledWindow()
 
+    const enableScheduledSync = api.getConfig('enableScheduledSync')
     const interval = api.getConfig('syncInterval')
     
     if (interval !== currentInterval) {
@@ -2144,11 +2398,40 @@ exports.init = api => {
     const now = Date.now()
     const intervalMs = currentInterval * 60 * 1000
     
-    if (lastSyncTime === 0 || (now - lastSyncTime) >= intervalMs) {
+    // 检查是否到了同步时间间隔
+    const timeToSync = lastSyncTime === 0 || (now - lastSyncTime) >= intervalMs
+    
+    if (!timeToSync) {
+      return
+    }
+
+    // 關鍵修改：只有在窗口內時才執行同步
+    if (enableScheduledSync) {
+      if (isWithinScheduledWindow()) {
+        await runSync()
+      } else {
+        // 不在窗口內，設置停止標誌（如果正在同步）
+        if (isSyncing) {
+          shouldStopSync = true
+          if (api.getConfig('debug')) {
+            api.log('[sync] Setting stop flag for ongoing sync (outside window)')
+          }
+        }
+        
+        const debug = api.getConfig('debug')
+        if (debug && (now - lastWindowLogTime) >= WINDOW_LOG_INTERVAL) {
+          const nextWindow = getNextScheduledWindowStart()
+          const waitMinutes = Math.round((nextWindow - now) / (60 * 1000))
+          api.log(`[sync] Waiting for next scheduled window (in ~${waitMinutes} minutes)`)
+          lastWindowLogTime = now
+        }
+      }
+    } else {
+      // 定時同步未啟用，正常執行
       await runSync()
     }
   }
-
+  
   const checkIncompleteSyncs = async () => {
     const debug = api.getConfig('debug')
     const syncTargets = api.getConfig('syncTargets') || []
@@ -2179,6 +2462,18 @@ exports.init = api => {
     }
   }, 30 * 1000)
 
+  // 新增：窗口检查定时器，用于在窗口结束时中断正在进行的同步
+  windowCheckTimer = api.setInterval(() => {
+    const enableScheduledSync = api.getConfig('enableScheduledSync')
+    if (enableScheduledSync && isSyncing && !isWithinScheduledWindow()) {
+      // 如果正在同步且已離開窗口，設置停止標誌
+      shouldStopSync = true
+      if (api.getConfig('debug')) {
+        api.log('[sync] Window ended, signaling sync to stop')
+      }
+    }
+  }, 10 * 1000) // 每10秒檢查一次
+
   if (api.getConfig('enableSync')) {
     checkIncompleteSyncs().catch(err => {
       api.log(`[error] Failed to check incomplete syncs: ${err.message}`)
@@ -2202,6 +2497,10 @@ exports.init = api => {
         clearInterval(scheduledSyncTimer)
         scheduledSyncTimer = null
       }
+      if (windowCheckTimer) {
+        clearInterval(windowCheckTimer)
+        windowCheckTimer = null
+      }
     },
     
     customRest: {
@@ -2221,6 +2520,7 @@ exports.init = api => {
         const enableScheduledSync = api.getConfig('enableScheduledSync')
         const syncStartTime = api.getConfig('syncStartTime') || '00:30'
         const syncEndTime = api.getConfig('syncEndTime') || '08:30'
+        const concurrentDownloads = api.getConfig('concurrentDownloads') || 3
         
         const nextSync = lastSyncTime > 0 && interval > 0 && enableSync
           ? new Date(lastSyncTime + interval * 60 * 1000).toISOString()
@@ -2295,6 +2595,7 @@ exports.init = api => {
           interval: interval,
           enabled: interval > 0 && enableSync,
           mirrorMode: mirrorMode,
+          concurrentDownloads: concurrentDownloads,
           targets: targetsStatus,
           isSyncing: isSyncing,
           syncDuration: isSyncing ? ((Date.now() - syncStartTime) / 1000).toFixed(1) + 's' : null
