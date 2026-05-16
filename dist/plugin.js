@@ -1,4 +1,4 @@
-exports.version = 4.2
+exports.version = 4.3
 exports.description = "Sync folders from remote HFS3 server (multi-target with independent destinations)"
 exports.apiRequired = 10
 exports.repo = "Hug3O/Filessync-plugin"
@@ -130,14 +130,32 @@ exports.config = {
     xs: 6,
     helperText: 'ON: Delete local files not in remote (full mirror). OFF: Only add/update files (one-way backup)'
   },
-  syncInterval: {
+syncInterval: {
     type: 'number',
-    label: 'Sync Interval (minutes)',
-    defaultValue: 60,
-    helperText: 'How often to sync (in minutes). 0 = disable automatic sync',
+    label: 'Sync Interval (days)',
+    defaultValue: 1,
+    helperText: 'Time between automatic sync starts in days. 0 = disable automatic sync. Supports decimals (e.g. 0.5 = 12 hours)',
     min: 0,
     xs: 6,
+    max: 30
+},
+quickScanThreshold: {
+    type: 'number',
+    label: 'Quick Scan Threshold (minutes)',
+    defaultValue: 30,
+    helperText: 'Skip deep scan if folder unchanged within this time. Should be SHORTER than Sync Interval. For large backups (100K+ files): set to 60-120 to reduce server load significantly. 0 = always deep scan, max 43200 (30 days)',
+    xs: 6,
+    min: 0,
     max: 43200
+},
+  checkpointInterval: {
+    type: 'number',
+    label: 'Checkpoint Interval (seconds)',
+    defaultValue: 10,
+    helperText: 'How often to save sync progress (prevents data loss on restart)',
+    xs: 6,
+    min: 5,
+    max: 300
   },
   aria2Path: {
     type: 'real_path',
@@ -206,24 +224,6 @@ exports.config = {
     label: 'Global Exclude Folders',
     defaultValue: 'cache,temp,node_modules,.git,.svn,__pycache__',
     helperText: 'Comma-separated list of folder names to exclude from sync (global)'
-  },
-quickScanThreshold: {
-    type: 'number',
-    label: 'Quick Scan Threshold (minutes)',
-    defaultValue: 4320,
-    helperText: 'How long to trust quick scan since last folder change. For large backups (100K+ files): recommend 1440 (1 day) or 4320 (3 days). 0 = always deep scan, max 43200 (30 days)',
-    xs: 6,
-    min: 0,
-    max: 43200
-},
-  checkpointInterval: {
-    type: 'number',
-    label: 'Checkpoint Interval (seconds)',
-    defaultValue: 10,
-    helperText: 'How often to save sync progress (prevents data loss on restart)',
-    xs: 6,
-    min: 5,
-    max: 300
   },
   debug: {
     type: 'boolean',
@@ -2396,7 +2396,7 @@ const processTarget = async (target, targetRoot, shouldStopFn) => {
     if (currentInterval <= 0) return
 
     const now = Date.now()
-    const intervalMs = currentInterval * 60 * 1000
+    const intervalMs = currentInterval * 24 * 60 * 60 * 1000
     
     // 检查是否到了同步时间间隔
     const timeToSync = lastSyncTime === 0 || (now - lastSyncTime) >= intervalMs
@@ -2512,95 +2512,99 @@ const processTarget = async (target, targetRoot, shouldStopFn) => {
         return { message: 'Manual sync triggered' }
       },
 
-      async getSyncStatus() {
-        const syncTargets = api.getConfig('syncTargets') || []
-        const interval = api.getConfig('syncInterval')
-        const mirrorMode = api.getConfig('mirrorMode')
-        const enableSync = api.getConfig('enableSync')
-        const enableScheduledSync = api.getConfig('enableScheduledSync')
-        const syncStartTime = api.getConfig('syncStartTime') || '00:30'
-        const syncEndTime = api.getConfig('syncEndTime') || '08:30'
-        const concurrentDownloads = api.getConfig('concurrentDownloads') || 3
-        
-        const nextSync = lastSyncTime > 0 && interval > 0 && enableSync
-          ? new Date(lastSyncTime + interval * 60 * 1000).toISOString()
-          : 'Not scheduled'
+async getSyncStatus() {
+    const syncTargets = api.getConfig('syncTargets') || []
+    const interval = api.getConfig('syncInterval')
+    const mirrorMode = api.getConfig('mirrorMode')
+    const enableSync = api.getConfig('enableSync')
+    const enableScheduledSync = api.getConfig('enableScheduledSync')
+    const syncStartTime = api.getConfig('syncStartTime') || '00:30'
+    const syncEndTime = api.getConfig('syncEndTime') || '08:30'
+    const concurrentDownloads = api.getConfig('concurrentDownloads') || 3
+    const quickScanThreshold = api.getConfig('quickScanThreshold')
 
-        // 计算下次窗口开始时间
-        let nextWindowStart = null
-        if (enableScheduledSync) {
-          const nextStart = getNextScheduledWindowStart()
-          nextWindowStart = nextStart.toISOString()
-        }
+    // 计算下次同步时间（天数转为毫秒）
+    const intervalMs = interval * 24 * 60 * 60 * 1000
+    const nextSync = lastSyncTime > 0 && interval > 0 && enableSync
+        ? new Date(lastSyncTime + intervalMs).toISOString()
+        : 'Not scheduled'
 
-        const targetsStatus = []
-        for (const target of syncTargets) {
-          if (!target.localDestination) continue
-          
-          const rootManifest = loadDirectoryManifest(target.localDestination, target.name)
-          const syncState = loadSyncState(target.localDestination, target.name)
-          const globalState = loadGlobalState(target.localDestination)
-          
-          const isCompleted = globalState.completedTargets && globalState.completedTargets[target.name]
-          
-          if (rootManifest) {
-            targetsStatus.push({
-              name: target.name,
-              enabled: target.enabled !== false, // 顯示啟用狀態
-              destination: target.localDestination,
-              priority: target.priority !== undefined ? target.priority : 1,
-              priorityPatterns: target.priorityPatterns || '*.htm,*.html,*.js,*.css,*.ttf,*.woff',
-              username: target.username ? '******' : null,
-              hasAuth: !!(target.username && target.password),
-              // 顯示目標特定的排除設置
-              targetExcludeFiles: target.targetExcludeFiles || '',
-              targetExcludeFolders: target.targetExcludeFolders || '',
-              totalDirs: syncState.totalDirs || rootManifest.stats.totalDirs || 0,
-              totalFiles: rootManifest.stats.totalFiles || 0,
-              totalSize: rootManifest.stats.totalSize || 0,
-              syncedDirs: syncState.completedCount || rootManifest.stats.syncedDirs || 0,
-              syncedFiles: rootManifest.stats.syncedFiles || 0,
-              syncedSize: rootManifest.stats.syncedSize || 0,
-              skippedFiles: rootManifest.stats.skippedFiles || 0,
-              lastSync: rootManifest.lastSuccessfulSync,
-              pendingDirs: syncState.currentQueue ? syncState.currentQueue.length : 0,
-              hasPendingWork: syncState.currentQueue && syncState.currentQueue.length > 0,
-              isCompleted: !!isCompleted
-            })
-          } else {
-            targetsStatus.push({
-              name: target.name,
-              enabled: target.enabled !== false,
-              destination: target.localDestination,
-              priority: target.priority !== undefined ? target.priority : 1,
-              priorityPatterns: target.priorityPatterns || '*.htm,*.html,*.js,*.css,*.ttf,*.woff',
-              username: target.username ? '******' : null,
-              hasAuth: !!(target.username && target.password),
-              targetExcludeFiles: target.targetExcludeFiles || '',
-              targetExcludeFolders: target.targetExcludeFolders || '',
-              status: 'not_scanned'
-            })
-          }
-        }
+    // 计算下次窗口开始时间
+    let nextWindowStart = null
+    if (enableScheduledSync) {
+        const nextStart = getNextScheduledWindowStart()
+        nextWindowStart = nextStart.toISOString()
+    }
+
+    const targetsStatus = []
+    for (const target of syncTargets) {
+        if (!target.localDestination) continue
         
-        return {
-          enableSync: enableSync,
-          enableScheduledSync: enableScheduledSync,
-          syncStartTime: syncStartTime,
-          syncEndTime: syncEndTime,
-          isInScheduledWindow: isInScheduledWindow,
-          nextWindowStart: nextWindowStart,
-          lastSyncTime: lastSyncTime > 0 ? new Date(lastSyncTime).toISOString() : 'Never',
-          nextSyncTime: nextSync,
-          interval: interval,
-          enabled: interval > 0 && enableSync,
-          mirrorMode: mirrorMode,
-          concurrentDownloads: concurrentDownloads,
-          targets: targetsStatus,
-          isSyncing: isSyncing,
-          syncDuration: isSyncing ? ((Date.now() - syncStartTime) / 1000).toFixed(1) + 's' : null
+        const rootManifest = loadDirectoryManifest(target.localDestination, target.name)
+        const syncState = loadSyncState(target.localDestination, target.name)
+        const globalState = loadGlobalState(target.localDestination)
+        
+        const isCompleted = globalState.completedTargets && globalState.completedTargets[target.name]
+        
+        if (rootManifest) {
+            targetsStatus.push({
+                name: target.name,
+                enabled: target.enabled !== false,
+                destination: target.localDestination,
+                priority: target.priority !== undefined ? target.priority : 1,
+                priorityPatterns: target.priorityPatterns || '*.htm,*.html,*.js,*.css,*.ttf,*.woff',
+                username: target.username ? '******' : null,
+                hasAuth: !!(target.username && target.password),
+                targetExcludeFiles: target.targetExcludeFiles || '',
+                targetExcludeFolders: target.targetExcludeFolders || '',
+                totalDirs: syncState.totalDirs || rootManifest.stats.totalDirs || 0,
+                totalFiles: rootManifest.stats.totalFiles || 0,
+                totalSize: rootManifest.stats.totalSize || 0,
+                syncedDirs: syncState.completedCount || rootManifest.stats.syncedDirs || 0,
+                syncedFiles: rootManifest.stats.syncedFiles || 0,
+                syncedSize: rootManifest.stats.syncedSize || 0,
+                skippedFiles: rootManifest.stats.skippedFiles || 0,
+                lastSync: rootManifest.lastSuccessfulSync,
+                pendingDirs: syncState.currentQueue ? syncState.currentQueue.length : 0,
+                hasPendingWork: syncState.currentQueue && syncState.currentQueue.length > 0,
+                isCompleted: !!isCompleted
+            })
+        } else {
+            targetsStatus.push({
+                name: target.name,
+                enabled: target.enabled !== false,
+                destination: target.localDestination,
+                priority: target.priority !== undefined ? target.priority : 1,
+                priorityPatterns: target.priorityPatterns || '*.htm,*.html,*.js,*.css,*.ttf,*.woff',
+                username: target.username ? '******' : null,
+                hasAuth: !!(target.username && target.password),
+                targetExcludeFiles: target.targetExcludeFiles || '',
+                targetExcludeFolders: target.targetExcludeFolders || '',
+                status: 'not_scanned'
+            })
         }
-      },
+    }
+    
+    return {
+        enableSync: enableSync,
+        enableScheduledSync: enableScheduledSync,
+        syncStartTime: syncStartTime,
+        syncEndTime: syncEndTime,
+        isInScheduledWindow: isInScheduledWindow,
+        nextWindowStart: nextWindowStart,
+        lastSyncTime: lastSyncTime > 0 ? new Date(lastSyncTime).toISOString() : 'Never',
+        nextSyncTime: nextSync,
+        syncIntervalDays: interval,
+        syncIntervalMs: intervalMs,
+        quickScanThresholdMinutes: quickScanThreshold,
+        enabled: interval > 0 && enableSync,
+        mirrorMode: mirrorMode,
+        concurrentDownloads: concurrentDownloads,
+        targets: targetsStatus,
+        isSyncing: isSyncing,
+        syncDuration: isSyncing ? ((Date.now() - syncStartTime) / 1000).toFixed(1) + 's' : null
+    }
+},
 
       async getFailedFiles({ targetName }) {
         const syncTargets = api.getConfig('syncTargets') || []
