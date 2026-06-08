@@ -1,5 +1,5 @@
-exports.version = 4.3
-exports.description = "Sync folders from remote HFS3 server (multi-target with independent destinations)"
+exports.version = 5.9
+exports.description = "Sync folders from remote HFS3 server (Dual-list verification sync with distributed manifests and slime mold optimization)"
 exports.apiRequired = 10
 exports.repo = "Hug3O/Filessync-plugin"
 
@@ -11,7 +11,6 @@ exports.config = {
     helperText: 'Master switch to enable/disable all sync operations',
     xs: 6
   },
-  // 新增：定时同步总开关
   enableScheduledSync: {
     type: 'boolean',
     defaultValue: false,
@@ -19,7 +18,6 @@ exports.config = {
     helperText: 'Enable time-based scheduling for sync operations',
     xs: 6
   },
-  // 新增：开始时间
   syncStartTime: {
     type: 'string',
     defaultValue: '00:30',
@@ -28,7 +26,6 @@ exports.config = {
     xs: 6,
     when: config => config.enableScheduledSync === true
   },
-  // 新增：结束时间
   syncEndTime: {
     type: 'string',
     defaultValue: '08:30',
@@ -40,24 +37,14 @@ exports.config = {
   syncTargets: {
     type: 'array',
     label: 'Sync Targets',
-    helperText: 'Add multiple remote folders to sync',
+    helperText: 'Add multiple remote folders to sync. Each target mirrors remote structure exactly.',
     default: [],
     fields: {
       enabled: {
         type: 'boolean',
         label: 'Enable this target',
         defaultValue: true,
-        helperText: '獨立開關此同步目標',
-        xs: 6
-      },
-      priority: {
-        type: 'number',
-        label: 'Priority',
-        defaultValue: 1,
-        helperText: 'Lower number = higher priority (0 = highest)',
-        min: 0,
-        max: 10000,
-        xs: 6
+        xs: 12
       },
       name: {
         type: 'string',
@@ -69,14 +56,14 @@ exports.config = {
       remoteAddress: {
         type: 'string',
         label: 'Remote URL',
-        helperText: 'Full URL of the remote folder, e.g., http://server/hfs3/folder/',
+        helperText: 'Full URL of the remote folder, e.g., http://192.168.1.224/h/Patch/',
         required: true,
         xs: 12
       },
       username: {
         type: 'string',
         label: 'Username',
-        helperText: 'Username for HTTP authentication (leave empty if no authentication required)',
+        helperText: 'Username for HTTP authentication',
         xs: 6,
         required: false
       },
@@ -93,69 +80,56 @@ exports.config = {
         folders: true,
         files: false,
         label: 'Local Destination',
-        helperText: 'Local folder to sync to (can be different for each target)',
+        helperText: 'Local folder to sync to (will be mirrored exactly to remote)',
         defaultValue: '',
         required: true,
-        xs: 12
+        xs: 6
+      },
+      syncInterval: {
+        type: 'number',
+        label: 'Sync Interval (days)',
+        defaultValue: 3,
+        helperText: 'Minimum days between sync cycles for this target',
+        xs: 6,
+        min: 0,
+        max: 365
       },
       priorityPatterns: {
         type: 'text',
         label: 'Priority Download Patterns',
         defaultValue: '*.htm,*.html,*.js,*.css,*.ttf,*.woff',
         helperText: 'Comma-separated patterns (supports * wildcard) to download first',
+        xs: 6
+      },
+      allowedExtensions: {
+        type: 'text',
+        label: 'Allowed Extensions (Whitelist)',
+        defaultValue: '',
+        helperText: 'Leave empty to download all. Comma-separated extensions to download ONLY (e.g., mp4,jpg,png). Non-matching files will be skipped.',
+        xs: 6
+      },
+      excludeFiles: {
+        type: 'text',
+        label: 'Exclude Extensions',
+        defaultValue: 'tmp,log,bak,swp,cache,part',
+        helperText: 'Comma-separated file extensions to skip',
+        xs: 6
+      },
+      excludeFolders: {
+        type: 'text',
+        label: 'Exclude Folders',
+        defaultValue: 'cache,temp,node_modules,.git,.svn,__pycache__',
+        helperText: 'Comma-separated folder names to exclude',
+        xs: 6
+      },
+      enableSlimeMold: {
+        type: 'boolean',
+        defaultValue: false,
+        label: 'Enable Slime Mold Optimization',
+        helperText: 'Use slime mold algorithm to dynamically adjust scan frequency based on file change patterns.',
         xs: 12
-      },
-      targetExcludeFiles: {
-        type: 'text',
-        label: 'Target Exclude Extensions',
-        defaultValue: '',
-        helperText: 'Comma-separated file extensions to skip for this target only (overrides global settings)',
-        required: false,
-        xs: 6
-      },
-      targetExcludeFolders: {
-        type: 'text',
-        label: 'Target Exclude Folders',
-        defaultValue: '',
-        helperText: 'Comma-separated folder names to exclude for this target only (overrides global settings)',
-        required: false,
-        xs: 6
       }
     }
-  },
-  mirrorMode: {
-    type: 'boolean',
-    defaultValue: false,
-    label: 'Mirror Mode',
-    xs: 6,
-    helperText: 'ON: Delete local files not in remote (full mirror). OFF: Only add/update files (one-way backup)'
-  },
-syncInterval: {
-    type: 'number',
-    label: 'Sync Interval (days)',
-    defaultValue: 1,
-    helperText: 'Time between automatic sync starts in days. 0 = disable automatic sync. Supports decimals (e.g. 0.5 = 12 hours)',
-    min: 0,
-    xs: 6,
-    max: 30
-},
-quickScanThreshold: {
-    type: 'number',
-    label: 'Quick Scan Threshold (minutes)',
-    defaultValue: 30,
-    helperText: 'Skip deep scan if folder unchanged within this time. Should be SHORTER than Sync Interval. For large backups (100K+ files): set to 60-120 to reduce server load significantly. 0 = always deep scan, max 43200 (30 days)',
-    xs: 6,
-    min: 0,
-    max: 43200
-},
-  checkpointInterval: {
-    type: 'number',
-    label: 'Checkpoint Interval (seconds)',
-    defaultValue: 10,
-    helperText: 'How often to save sync progress (prevents data loss on restart)',
-    xs: 6,
-    min: 5,
-    max: 300
   },
   aria2Path: {
     type: 'real_path',
@@ -164,11 +138,20 @@ quickScanThreshold: {
     label: 'Aria2c Path',
     helperText: 'Path to aria2c executable.'
   },
+  exploreConcurrency: {
+    type: 'number',
+    label: 'Explore Concurrency',
+    defaultValue: 1,
+    helperText: 'Simultaneous directory scans. HDD: 1-2. SSD: 4-8.',
+    xs: 6,
+    min: 1,
+    max: 16
+  },
   concurrentDownloads: {
     type: 'number',
     label: 'Concurrent Downloads',
     defaultValue: 1,
-    helperText: 'Number of files to download simultaneously (parallel downloads)',
+    helperText: 'Files downloaded in parallel. HDD: 1. SSD: 2-4.',
     xs: 6,
     min: 1,
     max: 16
@@ -176,8 +159,8 @@ quickScanThreshold: {
   fileDelay: {
     type: 'number',
     label: 'Delay between files (ms)',
-    defaultValue: 100,
-    helperText: 'Time to wait between processing each file',
+    defaultValue: 200,
+    helperText: 'Time to wait between processing each file and directory scan.',
     xs: 6,
     min: 50,
     max: 10000
@@ -185,8 +168,9 @@ quickScanThreshold: {
   speedLimit: {
     type: 'number',
     label: 'Speed Limit (KB/s)',
-    defaultValue: 200,
+    defaultValue: 0,
     helperText: 'Maximum transfer speed (0 = unlimited)',
+xs: 6,
     min: 0
   },
   maxRetries: {
@@ -207,45 +191,20 @@ quickScanThreshold: {
     min: 1,
     max: 300
   },
-  overwrite: {
-    type: 'boolean',
-    defaultValue: false,
-    label: 'Overwrite Files',
-    helperText: 'Overwrite existing local files. If disabled, skip files that already exist with same size.'
-  },
-  excludeFiles: {
-    type: 'text',
-    label: 'Global Exclude Extensions',
-    defaultValue: 'tmp,log,bak,swp,cache,part',
-    helperText: 'Comma-separated blacklist of file extensions to skip (global)'
-  },
-  excludeFolders: {
-    type: 'text',
-    label: 'Global Exclude Folders',
-    defaultValue: 'cache,temp,node_modules,.git,.svn,__pycache__',
-    helperText: 'Comma-separated list of folder names to exclude from sync (global)'
-  },
   debug: {
     type: 'boolean',
-    defaultValue: true,
+    defaultValue: false,
     label: 'Debug Mode',
-    helperText: 'Show sync summary'
+    helperText: 'Show sync summary with detailed logs',
+    xs: 6
   },
   verboseDebug: {
     type: 'boolean',
     defaultValue: false,
     label: 'Verbose Debug',
-    helperText: 'Show downloaded files (one line per file)',
+    helperText: 'Show per-directory sync status',
     xs: 6,
     when: config => config.debug === true
-  },
-  traceDebug: {
-    type: 'boolean',
-    defaultValue: false,
-    label: 'Trace Debug',
-    helperText: 'Show API requests and skipped files (very verbose)',
-    xs: 6,
-    when: config => config.verboseDebug === true
   }
 }
 
@@ -256,2722 +215,1535 @@ exports.init = api => {
   const { promisify } = require('util')
   const execAsync = promisify(exec)
 
-  // 同步狀態存儲
-  let lastSyncTime = 0
   let syncTimer = null
   let isSyncing = false
   let syncStartTime = 0
-  let currentInterval = api.getConfig('syncInterval')
-  // 新增：定时检查定时器
   let scheduledSyncTimer = null
-  // 新增：窗口检查定时器
   let windowCheckTimer = null
-  // 新增：当前是否在定时窗口内
   let isInScheduledWindow = false
-  // 新增：上次窗口状态日志时间（用于限制日志频率）
   let lastWindowLogTime = 0
-  // 新增：窗口状态日志间隔（60分钟）
   const WINDOW_LOG_INTERVAL = 60 * 60 * 1000
-  // 新增：停止同步標誌
   let shouldStopSync = false
+  let checkpointTimer = null
+  let slimeMoldCheckTimer = null
 
-  // 文件名定義
-  const getManifestFileName = (targetName) => `sync.${targetName}.manifest.json`
-  const getFailedQueueFileName = (targetName) => `sync.${targetName}.failed.json`
-  const getSyncStateFileName = (targetName) => `sync.${targetName}.state.json`
-  const getGlobalStateFileName = () => `sync.global.state.json`
+  const targetLastScanTime = {}
 
-  // ==================== 新增：时间处理函数 ====================
+  const MANIFEST_VERSION = '5.9'
+  const MANIFEST_SIGNATURE = 'dual_list_v1'
+  const NODE_FILE = '.sync_node.json'
+  const FAILED_FILE_PREFIX = '.sync_failed_'
+  const GLOBAL_STATE_FILE = '.sync_global_state.json'
+  const SLIME_MOLD_FILE = '.slime_mold.json'
+  const SLIME_NETWORK_FILE = '.slime_network.json'
 
-  /**
-   * 解析时间字符串（HH:MM）为分钟数
-   */
+  const DEFAULT_CHECKPOINT_INTERVAL = 30
+  const DEFAULT_TIMESTAMP_TOLERANCE = 2
+  const SLIME_MOLD_CHECK_INTERVAL = 10 * 1000
+  const MAX_EXTRA_SCANS_PER_CYCLE = 5
+
+  const SIZE_ONLY_EXTENSIONS = new Set([
+    'mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'mpg', 'mpeg', '3gp', '3g2', 'ogv', 'ts', 'vob', 'rm', 'rmvb',
+    'mp3', 'wav', 'flac', 'aac', 'ogg', 'wma', 'm4a', 'opus', 'ape', 'alac', 'aiff', 'mid', 'midi',
+    'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico', 'tiff', 'tif', 'raw', 'psd', 'ai', 'eps', 'heic', 'heif',
+    'zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'iso', 'cab', 'arj', 'lzh',
+    'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp',
+    'db', 'sqlite', 'sqlite3', 'mdb', 'accdb',
+    'ttf', 'otf', 'woff', 'woff2', 'eot',
+    'bin', 'dat', 'pak', 'wad', 'bsp', 'unity3d', 'asset', 'assets'
+  ])
+
+  const DUAL_VERIFY_EXTENSIONS = new Set([
+    'js', 'ts', 'jsx', 'tsx', 'py', 'rb', 'php', 'pl', 'sh', 'bash', 'ps1', 'bat', 'cmd', 'vbs',
+    'html', 'htm', 'xhtml', 'shtml', 'asp', 'aspx', 'jsp', 'php', 'css', 'scss', 'sass', 'less',
+    'exe', 'dll', 'so', 'dylib', 'sys', 'drv', 'ocx',
+    'xml', 'json', 'yaml', 'yml', 'ini', 'cfg', 'conf', 'config', 'toml',
+    'c', 'cpp', 'h', 'hpp', 'cs', 'java', 'go', 'rs', 'swift', 'kt', 'lua', 'r', 'm', 'mm',
+    'pem', 'crt', 'key', 'cer', 'der', 'p12', 'pfx',
+    'patch', 'diff'
+  ])
+
+  const ILLEGAL_FILENAME_CHARS = /[<>:"/\\|?*]/g
+
+  const getNodeFilePath = (dirPath) => path.join(dirPath, NODE_FILE)
+  const getFailedQueuePath = (targetRoot, targetName) => {
+    const safeName = targetName.replace(/[<>:"/\\|?*]/g, '_')
+    return path.join(targetRoot, `${FAILED_FILE_PREFIX}${safeName}.json`)
+  }
+  const getIndexFilePath = (targetRoot, targetName) => {
+    const safeName = targetName.replace(/[<>:"/\\|?*]/g, '_')
+    return path.join(targetRoot, `.sync_${safeName}_index.json`)
+  }
+  const getGlobalStatePath = (targetRoot) => path.join(targetRoot, GLOBAL_STATE_FILE)
+  const getSlimeMoldPath = (dirPath) => path.join(dirPath, SLIME_MOLD_FILE)
+  const getSlimeNetworkPath = (targetRoot) => path.join(targetRoot, SLIME_NETWORK_FILE)
+  
+  const isSyncMetaFile = (filename) => {
+    return filename === NODE_FILE || filename.startsWith(FAILED_FILE_PREFIX) || 
+           filename.startsWith('.sync_') || filename === GLOBAL_STATE_FILE ||
+           filename === SLIME_MOLD_FILE || filename === SLIME_NETWORK_FILE
+  }
+
+  const logDebug = (msg) => { if (api.getConfig('debug')) api.log(msg) }
+  const logVerbose = (msg) => { if (api.getConfig('verboseDebug')) api.log(msg) }
+  const logError = (msg) => { if (api.getConfig('debug')) api.log(`[error] ${msg}`) }
+
+  // ========== 黏菌算法相关函数 ==========
+
+  const createSlimeNetwork = (targetName, targetRoot, syncIntervalDays) => {
+    return {
+      signature: MANIFEST_SIGNATURE,
+      version: MANIFEST_VERSION,
+      targetName,
+      targetRoot,
+      syncIntervalDays,
+      createdAt: new Date().toISOString(),
+      lastUpdated: new Date().toISOString(),
+      totalSyncs: 0,
+      extraScansThisCycle: 0,
+      lastCycleReset: new Date().toISOString(),
+      branches: {},
+      hotPaths: []
+    }
+  }
+
+  const createSlimeNode = (dirPath, relativePath, syncIntervalDays) => {
+    return {
+      signature: MANIFEST_SIGNATURE,
+      version: MANIFEST_VERSION,
+      path: relativePath,
+      syncIntervalDays,
+      createdAt: new Date().toISOString(),
+      lastUpdated: new Date().toISOString(),
+      heat: 0,
+      maxHeatEver: 0,
+      heatHistory: [],
+      changeStats: {
+        totalFiles: 0,
+        changedFiles: 0,
+        newFiles: 0,
+        deletedFiles: 0,
+        timestampFixed: 0,
+        lastChange: null,
+        changeRate: 0
+      },
+      scanCount: 0,
+      extraScansTriggered: 0,
+      lastScanTime: null,
+      parentHeat: 0,
+      childrenHeat: {}
+    }
+  }
+
+  const calculateDecayRate = (syncIntervalDays, checkIntervalMinutes) => {
+    const totalMinutes = syncIntervalDays * 24 * 60
+    const totalChecks = Math.max(1, Math.floor(totalMinutes / checkIntervalMinutes))
+    const targetResidual = 0.001
+    const initialHeat = 100
+    return Math.pow(targetResidual / initialHeat, 1 / totalChecks)
+  }
+
+  const loadSlimeNetwork = (targetRoot) => {
+    try {
+      const networkPath = getSlimeNetworkPath(targetRoot)
+      if (fs.existsSync(networkPath)) {
+        const data = JSON.parse(fs.readFileSync(networkPath, 'utf8'))
+        if (data.signature === MANIFEST_SIGNATURE && data.version === MANIFEST_VERSION) return data
+      }
+    } catch (e) {}
+    return null
+  }
+
+  const saveSlimeNetwork = (targetRoot, network) => {
+    try {
+      network.signature = MANIFEST_SIGNATURE
+      network.version = MANIFEST_VERSION
+      network.lastUpdated = new Date().toISOString()
+      fs.writeFileSync(getSlimeNetworkPath(targetRoot), JSON.stringify(network, null, 2))
+    } catch (error) {
+      logError(`Failed to save slime network: ${error.message}`)
+    }
+  }
+
+  const loadSlimeNode = (dirPath) => {
+    try {
+      const nodePath = getSlimeMoldPath(dirPath)
+      if (fs.existsSync(nodePath)) {
+        const data = JSON.parse(fs.readFileSync(nodePath, 'utf8'))
+        if (data.signature === MANIFEST_SIGNATURE && data.version === MANIFEST_VERSION) return data
+      }
+    } catch (e) {}
+    return null
+  }
+
+  const saveSlimeNode = (dirPath, nodeData) => {
+    try {
+      nodeData.signature = MANIFEST_SIGNATURE
+      nodeData.version = MANIFEST_VERSION
+      nodeData.lastUpdated = new Date().toISOString()
+      if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true })
+      fs.writeFileSync(getSlimeMoldPath(dirPath), JSON.stringify(nodeData, null, 2))
+    } catch (error) {
+      logError(`Failed to save slime node: ${error.message}`)
+    }
+  }
+
+  const decayHeatByTime = (nodeData, network, now) => {
+    now = now || Date.now()
+    if (!nodeData.lastUpdated) return nodeData.heat
+    
+    const syncIntervalDays = nodeData.syncIntervalDays || (network ? network.syncIntervalDays : 3)
+    const decayRate = calculateDecayRate(syncIntervalDays, SLIME_MOLD_CHECK_INTERVAL / (60 * 1000))
+    const lastUpdated = new Date(nodeData.lastUpdated).getTime()
+    const elapsedChecks = Math.floor((now - lastUpdated) / SLIME_MOLD_CHECK_INTERVAL)
+    if (elapsedChecks <= 0) return nodeData.heat
+    
+    return Math.max(0, parseFloat((nodeData.heat * Math.pow(decayRate, elapsedChecks)).toFixed(4)))
+  }
+
+  const updateSlimeHeat = (nodeData, changeCount, network) => {
+    const now = new Date()
+    const syncIntervalDays = nodeData.syncIntervalDays || (network ? network.syncIntervalDays : 3)
+    const currentHeat = decayHeatByTime(nodeData, network || { syncIntervalDays }, now.getTime())
+    
+    let changeRate = 0
+    const totalFiles = nodeData.changeStats.totalFiles || 1
+    if (totalFiles > 0) changeRate = changeCount / totalFiles
+    else if (changeCount > 0) changeRate = 1.0
+    
+    let heatGain = changeRate * 80
+    if (changeCount > 10) heatGain += 15
+    else if (changeCount > 5) heatGain += 10
+    if (changeRate > 0.5) heatGain += 10
+    
+    const newHeat = Math.min(100, currentHeat + heatGain)
+    
+    nodeData.changeStats.changeRate = parseFloat(changeRate.toFixed(4))
+    nodeData.changeStats.lastChange = changeCount > 0 ? now.toISOString() : nodeData.changeStats.lastChange
+    
+    if (!nodeData.heatHistory) nodeData.heatHistory = []
+    nodeData.heatHistory.push({
+      time: now.toISOString(),
+      heat: parseFloat(newHeat.toFixed(2)),
+      changeCount,
+      changeRate: parseFloat(changeRate.toFixed(4))
+    })
+    if (nodeData.heatHistory.length > 50) nodeData.heatHistory = nodeData.heatHistory.slice(-50)
+    
+    nodeData.heat = parseFloat(newHeat.toFixed(2))
+    if (newHeat > (nodeData.maxHeatEver || 0)) nodeData.maxHeatEver = parseFloat(newHeat.toFixed(2))
+    nodeData.scanCount = (nodeData.scanCount || 0) + 1
+    nodeData.lastScanTime = now.toISOString()
+    nodeData.lastUpdated = now.toISOString()
+    nodeData.syncIntervalDays = syncIntervalDays
+    
+    return nodeData
+  }
+
+  const getExtraScanTimes = (network) => {
+    const syncIntervalDays = network.syncIntervalDays || 3
+    const totalHours = syncIntervalDays * 24
+    const cycleStartTime = new Date(network.lastCycleReset).getTime()
+    
+    return Array.from({ length: MAX_EXTRA_SCANS_PER_CYCLE }, (_, i) => {
+      const position = Math.pow(i / MAX_EXTRA_SCANS_PER_CYCLE, 1.5)
+      const hoursFromStart = position * totalHours
+      return {
+        index: i,
+        hoursFromStart: parseFloat(hoursFromStart.toFixed(2)),
+        timestamp: cycleStartTime + hoursFromStart * 60 * 60 * 1000,
+        heatThreshold: parseFloat((100 * Math.pow(0.5, i)).toFixed(1))
+      }
+    })
+  }
+
+  const shouldTriggerExtraScan = (network, relativePath, nodeData, baseIntervalDays) => {
+    if (!network || !nodeData || network.extraScansThisCycle >= MAX_EXTRA_SCANS_PER_CYCLE) return false
+    
+    const currentHeat = decayHeatByTime(nodeData, network, Date.now())
+    if (currentHeat < 1) return false
+    
+    const extraScanTimes = getExtraScanTimes(network)
+    for (const scanPoint of extraScanTimes) {
+      if (Date.now() >= scanPoint.timestamp && currentHeat >= scanPoint.heatThreshold) {
+        const branchData = network.branches[relativePath]
+        if (branchData && branchData.lastExtraScanIndex >= scanPoint.index) continue
+        
+        const lastScanTime = nodeData.lastScanTime ? new Date(nodeData.lastScanTime).getTime() : 0
+        const timeSinceLastScan = (Date.now() - lastScanTime) / (1000 * 60 * 60)
+        const minInterval = Math.min(
+          baseIntervalDays * 24 / (MAX_EXTRA_SCANS_PER_CYCLE + 1),
+          Math.max(0.17, baseIntervalDays * 2)
+        )
+        
+        if (timeSinceLastScan >= minInterval) return true
+      }
+    }
+    return false
+  }
+
+  const resetSlimeCycle = (network) => {
+    network.extraScansThisCycle = 0
+    network.lastCycleReset = new Date().toISOString()
+    
+    for (const branchPath in network.branches) {
+      network.branches[branchPath].lastExtraScanIndex = -1
+    }
+    
+    for (const hotPath of network.hotPaths) {
+      const node = loadSlimeNode(path.join(network.targetRoot, hotPath))
+      if (node) {
+        node.extraScansTriggered = 0
+        node.lastUpdated = new Date().toISOString()
+        saveSlimeNode(path.join(network.targetRoot, hotPath), node)
+      }
+    }
+    return network
+  }
+
+  const updateSlimeNetwork = (network, relativePath, changeCount, totalFiles) => {
+    if (!network) return network
+    
+    if (!network.syncIntervalDays) network.syncIntervalDays = 3
+    
+    if (!network.branches[relativePath]) {
+      network.branches[relativePath] = {
+        path: relativePath,
+        heat: 0,
+        changeCount: 0,
+        totalFiles: 0,
+        lastChange: null,
+        lastExtraScanIndex: -1
+      }
+    }
+    
+    const branch = network.branches[relativePath]
+    let changeRate = totalFiles > 0 ? changeCount / totalFiles : 0
+    
+    const nodePath = relativePath ? path.join(network.targetRoot, relativePath) : network.targetRoot
+    const slimeNode = loadSlimeNode(nodePath)
+    branch.heat = slimeNode ? slimeNode.heat : parseFloat(Math.min(100, changeRate * 80).toFixed(2))
+    branch.changeCount = changeCount
+    branch.totalFiles = totalFiles
+    if (changeCount > 0) branch.lastChange = new Date().toISOString()
+    
+    network.hotPaths = Object.entries(network.branches)
+      .filter(([, b]) => b.heat > 5)
+      .sort(([, a], [, b]) => b.heat - a.heat)
+      .map(([p]) => p)
+      .slice(0, 15)
+    
+    network.totalSyncs = (network.totalSyncs || 0) + 1
+    return network
+  }
+
+  const checkSlimeMoldScans = async (target, targetRoot) => {
+    if (!target.enableSlimeMold) return
+    
+    const targetName = target.name
+    const baseIntervalDays = target.syncInterval !== undefined ? target.syncInterval : 3
+    
+    let network = loadSlimeNetwork(targetRoot)
+    if (!network) {
+      network = createSlimeNetwork(targetName, targetRoot, baseIntervalDays)
+      saveSlimeNetwork(targetRoot, network)
+      logDebug(`[slime] [${targetName}] Created new network`)
+      return
+    }
+    
+    if (network.syncIntervalDays !== baseIntervalDays) network.syncIntervalDays = baseIntervalDays
+    
+    const timeSinceLastFullSync = Date.now() - (targetLastScanTime[targetName] || 0)
+    if (timeSinceLastFullSync >= baseIntervalDays * 24 * 60 * 60 * 1000) return
+    
+    let triggeredPaths = []
+    for (const hotPath of network.hotPaths) {
+      if (network.extraScansThisCycle >= MAX_EXTRA_SCANS_PER_CYCLE) break
+      
+      const nodePath = path.join(targetRoot, hotPath)
+      let nodeData = loadSlimeNode(nodePath) || createSlimeNode(nodePath, hotPath, baseIntervalDays)
+      
+      if (shouldTriggerExtraScan(network, hotPath, nodeData, baseIntervalDays)) {
+        triggeredPaths.push({ path: hotPath, node: nodeData })
+        network.extraScansThisCycle++
+        
+        if (network.branches[hotPath]) {
+          const extraScanTimes = getExtraScanTimes(network)
+          for (let i = extraScanTimes.length - 1; i >= 0; i--) {
+            if (Date.now() >= extraScanTimes[i].timestamp) {
+              network.branches[hotPath].lastExtraScanIndex = extraScanTimes[i].index
+              break
+            }
+          }
+        }
+      }
+    }
+    
+    if (triggeredPaths.length > 0) {
+      logDebug(`[slime] [${targetName}] Extra scans triggered: ${triggeredPaths.map(p => p.path).join(', ')}`)
+      for (const { path: scanPath } of triggeredPaths) {
+        await slimeMoldLocalScan(target, targetRoot, scanPath, network)
+      }
+    }
+    
+    saveSlimeNetwork(targetRoot, network)
+  }
+
+  const slimeMoldLocalScan = async (target, targetRoot, relativePath, network) => {
+    const targetName = target.name
+    const baseIntervalDays = target.syncInterval !== undefined ? target.syncInterval : 3
+    
+    try {
+      const localPath = relativePath ? path.join(targetRoot, relativePath) : targetRoot
+      let nodeData = loadSlimeNode(localPath) || createSlimeNode(localPath, relativePath, baseIntervalDays)
+      
+      const apiUrl = new URL(target.remoteAddress)
+      const exploreUrl = buildExploreUrl(`${apiUrl.protocol}//${apiUrl.host}`, apiUrl.pathname, relativePath)
+      const fileList = await getRemoteFileList(exploreUrl, targetName, target.username, target.password)
+      
+      const remoteFiles = {}
+      const excludeSettings = getExcludeSettings(target)
+      const allowedExtensions = getAllowedExtensions(target)
+      
+      for (const item of fileList) {
+        if (!item?.n) continue
+        const isDir = item.n.endsWith('/')
+        const name = isDir ? item.n.slice(0, -1) : item.n
+        if (!isDir && !shouldExcludeFile(name, excludeSettings.excludeFiles, allowedExtensions)) {
+          remoteFiles[name] = { size: item.s || 0, mtime: item.m || null, ctime: item.c || null }
+        }
+      }
+      
+      const localScan = scanLocalDirectory(localPath, excludeSettings.excludeFiles, excludeSettings.excludeFolders, allowedExtensions)
+      let changeCount = 0
+      
+      for (const [fileName, remoteInfo] of Object.entries(remoteFiles)) {
+        const localInfo = localScan.files[fileName]
+        if (!localInfo || localInfo.size !== remoteInfo.size) changeCount++
+      }
+      for (const fileName of Object.keys(localScan.files)) {
+        if (!remoteFiles[fileName]) changeCount++
+      }
+      
+      nodeData.changeStats.totalFiles = Object.keys(remoteFiles).length
+      nodeData.changeStats.changedFiles = changeCount
+      updateSlimeHeat(nodeData, changeCount, network)
+      nodeData.extraScansTriggered = (nodeData.extraScansTriggered || 0) + 1
+      
+      saveSlimeNode(localPath, nodeData)
+      logDebug(`[slime] [${targetName}] Scan '${relativePath}': ${changeCount} changes, heat:${nodeData.heat}`)
+      
+      if (changeCount > 0) {
+        const comparison = compareListsForSlime(remoteFiles, localScan.files)
+        for (const file of comparison.filesToDownload) {
+          try {
+            const fileRemotePath = relativePath ? `${relativePath}/${file.name}` : file.name
+            await downloadWithAria2(buildDownloadUrl(target.remoteAddress, fileRemotePath), path.join(localPath, file.name), targetName, target.username, target.password, file.mtime, file.ctime)
+          } catch (error) {
+            logDebug(`[slime] [${targetName}] Failed: ${file.name}`)
+          }
+        }
+        for (const file of comparison.filesToDelete) {
+          try { if (fs.existsSync(path.join(localPath, file.name))) fs.unlinkSync(path.join(localPath, file.name)) } catch (e) {}
+        }
+      }
+    } catch (error) {
+      logError(`[${targetName}] Slime scan failed '${relativePath}': ${error.message}`)
+    }
+  }
+
+  const compareListsForSlime = (remoteFiles, localFiles) => {
+    const filesToDownload = []
+    const filesToDelete = []
+    
+    for (const [fileName, remoteInfo] of Object.entries(remoteFiles)) {
+      const localInfo = localFiles[fileName]
+      if (!localInfo || localInfo.size !== remoteInfo.size) {
+        filesToDownload.push({ name: fileName, size: remoteInfo.size, mtime: remoteInfo.mtime, ctime: remoteInfo.ctime })
+      }
+    }
+    for (const fileName of Object.keys(localFiles)) {
+      if (!remoteFiles[fileName]) filesToDelete.push({ name: fileName })
+    }
+    return { filesToDownload, filesToDelete }
+  }
+
+  const updateSlimeAfterSync = (target, targetRoot, relativePath, comparison, nodeData) => {
+    if (!target.enableSlimeMold) return
+    
+    try {
+      const localPath = relativePath ? path.join(targetRoot, relativePath) : targetRoot
+      const baseIntervalDays = target.syncInterval !== undefined ? target.syncInterval : 3
+      
+      let slimeNode = loadSlimeNode(localPath) || createSlimeNode(localPath, relativePath || '/', baseIntervalDays)
+      
+      const changeCount = comparison.summary.filesToAdd + comparison.summary.filesToUpdate + 
+                          comparison.summary.filesToRemove + (comparison.summary.filesToFixTimestamp || 0)
+      const totalFiles = Object.keys(nodeData?.remoteList?.files || comparison?.remoteList?.files || {}).length
+      
+      slimeNode.changeStats.totalFiles = totalFiles
+      slimeNode.changeStats.changedFiles = changeCount
+      
+      let network = loadSlimeNetwork(targetRoot) || createSlimeNetwork(target.name, targetRoot, baseIntervalDays)
+      updateSlimeHeat(slimeNode, changeCount, network)
+      saveSlimeNode(localPath, slimeNode)
+      updateSlimeNetwork(network, relativePath || '/', changeCount, totalFiles)
+      saveSlimeNetwork(targetRoot, network)
+    } catch (error) {
+      logError(`[${target.name}] Slime update failed: ${error.message}`)
+    }
+  }
+
+  // ========== 核心同步功能 ==========
+
+  const needsDualVerification = (filename) => {
+    const ext = path.extname(filename).toLowerCase().substring(1)
+    if (DUAL_VERIFY_EXTENSIONS.has(ext)) return true
+    if (SIZE_ONLY_EXTENSIONS.has(ext)) return false
+    return true
+  }
+
   const parseTimeToMinutes = (timeStr) => {
     const [hours, minutes] = timeStr.split(':').map(Number)
     return hours * 60 + minutes
   }
 
-  /**
-   * 检查当前时间是否在定时窗口内（支持跨日）
-   */
   const isWithinScheduledWindow = () => {
     const enableScheduledSync = api.getConfig('enableScheduledSync')
-    
-    // 如果定时同步未启用，返回true（允许同步）
-    if (!enableScheduledSync) {
-      return true
-    }
-
+    if (!enableScheduledSync) return true
     const startTimeStr = api.getConfig('syncStartTime') || '00:30'
     const endTimeStr = api.getConfig('syncEndTime') || '08:30'
-
-    const now = new Date()
-    const currentMinutes = now.getHours() * 60 + now.getMinutes()
-    
+    const currentMinutes = new Date().getHours() * 60 + new Date().getMinutes()
     const startMinutes = parseTimeToMinutes(startTimeStr)
-    let endMinutes = parseTimeToMinutes(endTimeStr)
-
-    // 处理跨日逻辑
-    if (endMinutes <= startMinutes) {
-      // 结束时间小于等于开始时间，表示跨日（例如：23:00 到 06:00）
-      // 当前时间在 [start, 24:00) 或者 [0, end) 范围内都属于窗口期
-      if (currentMinutes >= startMinutes) {
-        return true // 当前时间在开始时间之后（当天）
-      } else if (currentMinutes < endMinutes) {
-        return true // 当前时间在结束时间之前（次日凌晨）
-      }
-      return false
-    } else {
-      // 正常时间范围（不跨日）
-      return currentMinutes >= startMinutes && currentMinutes < endMinutes
-    }
+    const endMinutes = parseTimeToMinutes(endTimeStr)
+    if (endMinutes <= startMinutes) return currentMinutes >= startMinutes || currentMinutes < endMinutes
+    return currentMinutes >= startMinutes && currentMinutes < endMinutes
   }
 
-  /**
-   * 获取下次定时窗口的开始时间
-   */
   const getNextScheduledWindowStart = () => {
-    const startTimeStr = api.getConfig('syncStartTime') || '00:30'
-    const [startHours, startMinutes] = startTimeStr.split(':').map(Number)
-    
-    const now = new Date()
-    const nextStart = new Date(now)
+    const [startHours, startMinutes] = (api.getConfig('syncStartTime') || '00:30').split(':').map(Number)
+    const nextStart = new Date()
     nextStart.setHours(startHours, startMinutes, 0, 0)
-    
-    // 如果已经过了今天的开始时间，设置为明天的开始时间
-    if (now >= nextStart) {
-      nextStart.setDate(nextStart.getDate() + 1)
-    }
-    
+    if (new Date() >= nextStart) nextStart.setDate(nextStart.getDate() + 1)
     return nextStart
   }
 
-  /**
-   * 获取下次定时窗口的结束时间（基于开始时间计算）
-   */
-  const getNextScheduledWindowEnd = () => {
-    const endTimeStr = api.getConfig('syncEndTime') || '08:30'
-    const [endHours, endMinutes] = endTimeStr.split(':').map(Number)
-    
-    const nextStart = getNextScheduledWindowStart()
-    const nextEnd = new Date(nextStart)
-    nextEnd.setHours(endHours, endMinutes, 0, 0)
-    
-    const startTimeStr = api.getConfig('syncStartTime') || '00:30'
-    const startMinutes = parseTimeToMinutes(startTimeStr)
-    const endMinutesNum = parseTimeToMinutes(endTimeStr)
-    
-    // 如果结束时间小于等于开始时间，表示跨日，结束时间在开始时间的次日
-    if (endMinutesNum <= startMinutes) {
-      nextEnd.setDate(nextEnd.getDate() + 1)
-    }
-    
-    return nextEnd
-  }
+  const createGlobalSyncState = (targetName, targetRoot) => ({
+    signature: MANIFEST_SIGNATURE,
+    version: MANIFEST_VERSION,
+    targetName,
+    targetRoot,
+    state: 'idle',
+    syncStartTime: null,
+    syncEndTime: null,
+    lastCheckpointTime: null,
+    totalDirs: 0,
+    processedDirs: 0,
+    totalFiles: 0,
+    downloadedFiles: 0,
+    failedFiles: 0,
+    timestampFixedFiles: 0,
+    currentProcessingPath: null,
+    completedDirs: [],
+    errors: []
+  })
 
-  /**
-   * 计算距离下次窗口开始的时间（毫秒）
-   */
-  const getTimeToNextWindow = () => {
-    const enableScheduledSync = api.getConfig('enableScheduledSync')
-    if (!enableScheduledSync) {
-      return 0 // 定时未启用，立即执行
-    }
-
-    const now = new Date()
-    const nextStart = getNextScheduledWindowStart()
-    
-    return Math.max(0, nextStart - now)
-  }
-
-  /**
-   * 检查是否需要执行同步（基于定时窗口）
-   */
-  const shouldRunSync = () => {
-    // 总开关检查
-    if (!api.getConfig('enableSync')) {
-      return false
-    }
-
-    // 检查是否在定时窗口内
-    return isWithinScheduledWindow()
-  }
-
-  // ==================== 全局狀態管理 ====================
-
-  const getGlobalStatePath = (targetRoot) => {
-    return path.join(targetRoot, getGlobalStateFileName())
-  }
-
-  const loadGlobalState = (targetRoot) => {
+  const loadGlobalSyncState = (targetRoot) => {
     try {
       const statePath = getGlobalStatePath(targetRoot)
       if (fs.existsSync(statePath)) {
-        return JSON.parse(fs.readFileSync(statePath, 'utf8'))
+        const data = JSON.parse(fs.readFileSync(statePath, 'utf8'))
+        if (data.signature === MANIFEST_SIGNATURE && data.version === MANIFEST_VERSION) return data
       }
-    } catch (error) {
-      // ignore
-    }
-    return {
-      lastScanTime: {},
-      completedTargets: {},
-      targetProgress: {},
-      version: '3.7'
-    }
-  }
-
-  const saveGlobalState = (targetRoot, state) => {
-    try {
-      const statePath = getGlobalStatePath(targetRoot)
-      state.lastUpdated = new Date().toISOString()
-      state.version = '3.7'
-      fs.writeFileSync(statePath, JSON.stringify(state, null, 2))
-    } catch (error) {
-      api.log(`[error] Failed to save global state: ${error.message}`)
-    }
-  }
-
-  // ==================== Manifest 管理 ====================
-
-  const getManifestPath = (dirPath, targetName) => {
-    return path.join(dirPath, getManifestFileName(targetName))
-  }
-
-  const initDirectoryManifest = (dirPath, targetName, remotePath) => {
-    try {
-      if (!fs.existsSync(dirPath)) {
-        fs.mkdirSync(dirPath, { recursive: true })
-      }
-      
-      const manifestPath = getManifestPath(dirPath, targetName)
-      
-      const manifest = {
-        version: '3.7',
-        targetName: targetName,
-        remotePath: remotePath,
-        createdAt: new Date().toISOString(),
-        lastUpdated: new Date().toISOString(),
-        lastScanType: 'full',
-        lastSyncAttempt: null,
-        lastSuccessfulSync: null,
-        folderMtime: null,
-        folderSize: null,
-        subDirs: [],
-        files: [],
-        stats: {
-          totalFiles: 0,
-          totalSize: 0,
-          syncedFiles: 0,
-          syncedSize: 0,
-          skippedFiles: 0
-        },
-        scanComplete: false,
-        scanProgress: {
-          scannedFiles: 0,
-          totalFiles: 0,
-          pendingFiles: []
-        }
-      }
-      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
-      return manifest
-    } catch (error) {
-      api.log(`[error] Failed to init manifest for ${dirPath} (${targetName}): ${error.message}`)
-      return null
-    }
-  }
-
-  const loadDirectoryManifest = (dirPath, targetName) => {
-    try {
-      const manifestPath = getManifestPath(dirPath, targetName)
-      if (fs.existsSync(manifestPath)) {
-        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
-        if (!manifest.subDirs) manifest.subDirs = []
-        if (!manifest.files) manifest.files = []
-        if (!manifest.stats) {
-          manifest.stats = {
-            totalFiles: 0,
-            totalSize: 0,
-            syncedFiles: 0,
-            syncedSize: 0,
-            skippedFiles: 0
-          }
-        }
-        if (manifest.stats.skippedFiles === undefined) manifest.stats.skippedFiles = 0
-        if (manifest.scanComplete === undefined) manifest.scanComplete = false
-        if (!manifest.scanProgress) {
-          manifest.scanProgress = {
-            scannedFiles: 0,
-            totalFiles: 0,
-            pendingFiles: []
-          }
-        }
-        return manifest
-      }
-    } catch (error) {
-      // ignore
-    }
+    } catch (e) {}
     return null
   }
 
-  const saveDirectoryManifest = (dirPath, targetName, manifest) => {
+  const saveGlobalSyncState = (targetRoot, state) => {
     try {
-      const manifestPath = getManifestPath(dirPath, targetName)
-      manifest.lastUpdated = new Date().toISOString()
-      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
+      state.signature = MANIFEST_SIGNATURE
+      state.version = MANIFEST_VERSION
+      state.lastCheckpointTime = new Date().toISOString()
+      fs.writeFileSync(getGlobalStatePath(targetRoot), JSON.stringify(state, null, 2))
     } catch (error) {
-      api.log(`[error] Failed to save manifest for ${dirPath} (${targetName}): ${error.message}`)
+      logError(`Failed to save global state: ${error.message}`)
     }
   }
 
-  const getOrCreateDirectoryManifest = (dirPath, targetName, remotePath) => {
-    let manifest = loadDirectoryManifest(dirPath, targetName)
-    if (!manifest) {
-      manifest = initDirectoryManifest(dirPath, targetName, remotePath)
+  const deleteGlobalSyncState = (targetRoot) => {
+    try { if (fs.existsSync(getGlobalStatePath(targetRoot))) fs.unlinkSync(getGlobalStatePath(targetRoot)) } catch (e) {}
+  }
+
+  const shouldScanTarget = (target) => {
+    const lastScan = targetLastScanTime[target.name]
+    if (!lastScan) return true
+    const syncIntervalDays = target.syncInterval !== undefined ? target.syncInterval : 3
+    if (syncIntervalDays === 0) return true
+    if (target.localDestination) {
+      const globalState = loadGlobalSyncState(target.localDestination)
+      if (globalState && (globalState.state === 'syncing' || globalState.state === 'paused')) return true
     }
-    return manifest
+    return Date.now() - lastScan >= syncIntervalDays * 24 * 60 * 60 * 1000
   }
 
-  // ==================== 同步狀態管理 ====================
-
-  const getSyncStatePath = (targetRoot, targetName) => {
-    return path.join(targetRoot, getSyncStateFileName(targetName))
-  }
-
-  const loadSyncState = (targetRoot, targetName) => {
+  const getTargetLastSyncTime = (targetRoot) => {
     try {
-      const statePath = getSyncStatePath(targetRoot, targetName)
-      if (fs.existsSync(statePath)) {
-        const state = JSON.parse(fs.readFileSync(statePath, 'utf8'))
-        if (!state.currentQueue) state.currentQueue = []
-        if (!state.processedDirs) state.processedDirs = []
-        if (!state.inProgressDirs) state.inProgressDirs = []
-        if (!state.pendingDirs) state.pendingDirs = []
-        if (!state.completedDirs) state.completedDirs = []
-        return state
+      const globalState = loadGlobalSyncState(targetRoot)
+      if (globalState?.syncEndTime) return new Date(globalState.syncEndTime).getTime()
+      const rootNode = loadNodeFile(targetRoot)
+      if (rootNode?.syncStatus?.lastSync) return new Date(rootNode.syncStatus.lastSync).getTime()
+    } catch (e) {}
+    return 0
+  }
+
+  const initTargetScanTimes = () => {
+    const syncTargets = api.getConfig('syncTargets') || []
+    for (const target of syncTargets) {
+      if (target.enabled !== false && target.localDestination) {
+        try {
+          const lastSyncTime = getTargetLastSyncTime(target.localDestination)
+          if (lastSyncTime > 0) {
+            targetLastScanTime[target.name] = lastSyncTime
+            const globalState = loadGlobalSyncState(target.localDestination)
+            if (globalState && ['syncing', 'scanning', 'comparing', 'downloading', 'paused'].includes(globalState.state)) {
+              globalState.state = 'paused'
+              saveGlobalSyncState(target.localDestination, globalState)
+            }
+          }
+        } catch (e) {}
       }
-    } catch (error) {
-      // ignore
-    }
-    return {
-      currentQueue: [],
-      processedDirs: [],
-      inProgressDirs: [],
-      pendingDirs: [],
-      completedDirs: [],
-      lastCheckpoint: null,
-      totalDirs: 0,
-      completedCount: 0,
-      version: '3.7'
     }
   }
 
-  const saveSyncState = (targetRoot, targetName, state) => {
+  const createNodeData = (name, remotePath, localPath) => ({
+    signature: MANIFEST_SIGNATURE,
+    version: MANIFEST_VERSION,
+    name,
+    remotePath,
+    localPath,
+    remoteList: null,
+    localList: null,
+    syncStatus: {
+      phase: 'idle',
+      syncStartTime: null,
+      syncEndTime: null,
+      filesTotal: 0,
+      filesSynced: 0,
+      filesFailed: 0,
+      timestampFixed: 0,
+      lastSync: null,
+      lastVerify: null,
+      fileDownloadStatus: {}
+    },
+    comparisonResult: null,
+    childrenNames: [],
+    childrenStatus: {}
+  })
+
+  const loadNodeFile = (dirPath) => {
     try {
-      const statePath = getSyncStatePath(targetRoot, targetName)
-      state.lastCheckpoint = new Date().toISOString()
-      state.version = '3.7'
-      fs.writeFileSync(statePath, JSON.stringify(state, null, 2))
-      
-      const globalState = loadGlobalState(targetRoot)
-      if (!globalState.targetProgress[targetName]) {
-        globalState.targetProgress[targetName] = {}
+      const nodePath = getNodeFilePath(dirPath)
+      if (fs.existsSync(nodePath)) {
+        const data = JSON.parse(fs.readFileSync(nodePath, 'utf8'))
+        if (data.signature === MANIFEST_SIGNATURE) {
+          if (data.version !== MANIFEST_VERSION) return null
+          data.childrenNames = data.childrenNames || []
+          data.syncStatus = data.syncStatus || { phase: 'idle', filesTotal: 0, filesSynced: 0, filesFailed: 0, timestampFixed: 0, lastSync: null, lastVerify: null }
+          data.syncStatus.fileDownloadStatus = data.syncStatus.fileDownloadStatus || {}
+          data.childrenStatus = data.childrenStatus || {}
+          data.comparisonResult = data.comparisonResult || null
+          return data
+        }
       }
-      globalState.targetProgress[targetName] = {
-        completedDirs: state.completedDirs?.length || 0,
-        totalDirs: state.totalDirs || 0,
-        pendingDirs: state.pendingDirs?.length || 0,
-        lastUpdate: new Date().toISOString()
-      }
-      saveGlobalState(targetRoot, globalState)
-      
-    } catch (error) {
-      api.log(`[error] Failed to save sync state for ${targetName}: ${error.message}`)
-    }
+    } catch (e) {}
+    return null
   }
 
-  const clearSyncState = (targetRoot, targetName) => {
+  const saveNodeFile = (dirPath, nodeData) => {
     try {
-      const statePath = getSyncStatePath(targetRoot, targetName)
-      if (fs.existsSync(statePath)) {
-        fs.unlinkSync(statePath)
-      }
-      
-      const globalState = loadGlobalState(targetRoot)
-      if (globalState.targetProgress) {
-        delete globalState.targetProgress[targetName]
-      }
-      saveGlobalState(targetRoot, globalState)
-      
+      nodeData.signature = MANIFEST_SIGNATURE
+      nodeData.version = MANIFEST_VERSION
+      if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true })
+      fs.writeFileSync(getNodeFilePath(dirPath), JSON.stringify(nodeData, null, 2))
     } catch (error) {
-      api.log(`[error] Failed to clear sync state for ${targetName}: ${error.message}`)
+      logError(`Failed to save node file: ${error.message}`)
     }
-  }
-
-  // ==================== 失敗隊列管理 ====================
-
-  const getFailedQueuePath = (targetRoot, targetName) => {
-    return path.join(targetRoot, getFailedQueueFileName(targetName))
   }
 
   const loadFailedQueue = (targetRoot, targetName) => {
     try {
       const queuePath = getFailedQueuePath(targetRoot, targetName)
       if (fs.existsSync(queuePath)) {
-        return JSON.parse(fs.readFileSync(queuePath, 'utf8'))
+        const queue = JSON.parse(fs.readFileSync(queuePath, 'utf8'))
+        queue.files = queue.files || []
+        return queue
       }
     } catch (error) {
-      // ignore
+      try { fs.unlinkSync(getFailedQueuePath(targetRoot, targetName)) } catch (e) {}
     }
     return { files: [] }
   }
 
   const saveFailedQueue = (targetRoot, targetName, queue) => {
     try {
-      const queuePath = getFailedQueuePath(targetRoot, targetName)
       queue.lastUpdated = new Date().toISOString()
-      fs.writeFileSync(queuePath, JSON.stringify(queue, null, 2))
+      fs.writeFileSync(getFailedQueuePath(targetRoot, targetName), JSON.stringify(queue, null, 2))
     } catch (error) {
-      api.log(`[error] Failed to save failed queue for ${targetName}: ${error.message}`)
+      logError(`Failed to save failed queue: ${error.message}`)
     }
   }
 
   const addToFailedQueue = (targetRoot, targetName, fileInfo, error) => {
     try {
       const queue = loadFailedQueue(targetRoot, targetName)
-      
       const failedFile = {
-        ...fileInfo,
-        error: error.message,
+        remotePath: fileInfo.remotePath,
+        localPath: fileInfo.localPath,
+        size: fileInfo.size,
+        mtime: fileInfo.mtime || null,
+        ctime: fileInfo.ctime || null,
+        error: error.message?.substring(0, 200) || 'Unknown error',
         timestamp: new Date().toISOString(),
         attempts: (fileInfo.attempts || 0) + 1
       }
-
-      const existingIndex = queue.files.findIndex(f => 
-        f.targetName === targetName && f.remotePath === fileInfo.remotePath
-      )
-
-      if (existingIndex >= 0) {
-        queue.files[existingIndex] = failedFile
-      } else {
-        queue.files.push(failedFile)
-      }
-
+      const existingIndex = queue.files.findIndex(f => f.remotePath === fileInfo.remotePath)
+      if (existingIndex >= 0) queue.files[existingIndex] = failedFile
+      else queue.files.push(failedFile)
+      if (queue.files.length > 1000) queue.files = queue.files.slice(-500)
       saveFailedQueue(targetRoot, targetName, queue)
-
-      if (api.getConfig('verboseDebug')) {
-        api.log(`[verbose] [${targetName}] Failed: ${fileInfo.remotePath}`)
-      }
-    } catch (error) {
-      api.log(`[error] Failed to add to failed queue for ${targetName}: ${error.message}`)
+    } catch (e) {
+      logError(`Failed to add to failed queue: ${e.message}`)
     }
   }
 
   const removeFromFailedQueue = (targetRoot, targetName, remotePath) => {
     try {
       const queue = loadFailedQueue(targetRoot, targetName)
-      queue.files = queue.files.filter(f => 
-        !(f.targetName === targetName && f.remotePath === remotePath)
-      )
+      queue.files = queue.files.filter(f => f.remotePath !== remotePath)
       saveFailedQueue(targetRoot, targetName, queue)
-    } catch (error) {
-      api.log(`[error] Failed to remove from failed queue for ${targetName}: ${error.message}`)
+    } catch (e) {
+      logError(`Failed to remove from failed queue: ${e.message}`)
     }
   }
 
-  // ==================== 快速比對功能 ====================
+  const getExcludeSettings = (target) => ({
+    excludeFiles: (target.excludeFiles || '').split(',').map(e => e.trim().toLowerCase()).filter(e => e),
+    excludeFolders: (target.excludeFolders || '').split(',').map(f => f.trim()).filter(f => f)
+  })
 
-  const getFolderStats = (dirPath, targetName) => {
-    try {
-      if (!fs.existsSync(dirPath)) {
-        return { mtime: null, totalSize: 0 }
-      }
-
-      const stats = fs.statSync(dirPath)
-      let totalSize = 0
-      
-      const items = fs.readdirSync(dirPath)
-      for (const item of items) {
-        if (item === getManifestFileName(targetName)) continue
-        
-        const itemPath = path.join(dirPath, item)
-        try {
-          const itemStat = fs.statSync(itemPath)
-          if (itemStat.isFile()) {
-            totalSize += itemStat.size
-          }
-        } catch (e) {
-          // ignore
-        }
-      }
-
-      return {
-        mtime: stats.mtimeMs,
-        totalSize: totalSize
-      }
-    } catch (error) {
-      return { mtime: null, totalSize: 0 }
-    }
-  }
-
-  const checkFolderNeedDeepScan = (dirPath, targetName, manifest, quickScanThreshold) => {
-    if (!manifest || !manifest.folderMtime) {
-      return 'deep'
-    }
-
-    const currentStats = getFolderStats(dirPath, targetName)
-    
-    if (!currentStats.mtime) {
-      return 'deep'
-    }
-
-    const mtimeDiff = Math.abs(currentStats.mtime - manifest.folderMtime) / (1000 * 60)
-    
-    if (mtimeDiff < quickScanThreshold && currentStats.totalSize === manifest.folderSize) {
-      return 'quick'
-    }
-
-    return 'deep'
-  }
-
-  const quickScanDirectory = (dirPath, targetName, manifest) => {
-    if (!manifest || !fs.existsSync(dirPath)) {
-      return { missingFiles: [], extraFiles: [] }
-    }
-
-    const missingFiles = []
-    const extraFiles = []
-
-    for (const file of manifest.files) {
-      const filePath = path.join(dirPath, file.name)
-      if (!fs.existsSync(filePath)) {
-        missingFiles.push(file)
-        file.status = 'pending'
-      }
-    }
-
-    const existingFiles = new Set(fs.readdirSync(dirPath))
-    for (const file of manifest.files) {
-      existingFiles.delete(file.name)
-    }
-    existingFiles.delete(getManifestFileName(targetName))
-
-    for (const extraFile of existingFiles) {
-      const filePath = path.join(dirPath, extraFile)
-      try {
-        const stat = fs.statSync(filePath)
-        if (stat.isFile()) {
-          extraFiles.push({
-            name: extraFile,
-            size: stat.size
-          })
-        }
-      } catch (e) {
-        // ignore
-      }
-    }
-
-    return { missingFiles, extraFiles }
-  }
-
-  // ==================== 輔助功能 ====================
-
-  // 新增：獲取合併的排除設置
-  const getExcludeSettings = (target) => {
-    const globalExcludeFiles = api.getConfig('excludeFiles').split(',').map(ext => ext.trim().toLowerCase()).filter(ext => ext.length > 0)
-    const globalExcludeFolders = api.getConfig('excludeFolders').split(',').map(folder => folder.trim()).filter(folder => folder.length > 0)
-    
-    // 目標特定的排除設置
-    const targetExcludeFiles = target.targetExcludeFiles 
-      ? target.targetExcludeFiles.split(',').map(ext => ext.trim().toLowerCase()).filter(ext => ext.length > 0)
-      : []
-    
-    const targetExcludeFolders = target.targetExcludeFolders
-      ? target.targetExcludeFolders.split(',').map(folder => folder.trim()).filter(folder => folder.length > 0)
-      : []
-
-    // 合併全局和目標特定設置（目標特定設置優先，所以放在後面）
-    return {
-      excludeFiles: [...globalExcludeFiles, ...targetExcludeFiles],
-      excludeFolders: [...globalExcludeFolders, ...targetExcludeFolders]
-    }
+  const getAllowedExtensions = (target) => {
+    const allowedExt = (target.allowedExtensions || '').split(',').map(e => e.trim().toLowerCase()).filter(e => e)
+    return allowedExt.length > 0 ? allowedExt : null
   }
 
   const checkServerAvailable = async (apiUrl, username, password) => {
     try {
       let curlCmd = `curl -s -I --connect-timeout 5`
-      
-      // 添加认证信息
-      if (username && password) {
-        curlCmd += ` -u "${username}:${password}"`
-      }
-      
+      if (username && password) curlCmd += ` -u "${username}:${password}"`
       curlCmd += ` "${apiUrl.origin}"`
-      
       await execAsync(curlCmd)
       return true
-    } catch {
-      return false
-    }
+    } catch { return false }
   }
 
-  const requestWithRetry = async (command, maxRetries, retryDelay, verbose, trace) => {
+  const requestWithRetry = async (command, maxRetries, retryDelay) => {
     let lastError
-    
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        if (attempt > 1 && verbose) {
-          api.log(`[verbose] Retry attempt ${attempt}/${maxRetries}`)
-        }
-        
-        const { stdout, stderr } = await execAsync(command, { 
-          maxBuffer: 10 * 1024 * 1024,
-          windowsHide: true,
-          encoding: 'utf8'
-        })
-        
-        if (stderr && verbose) {
-          api.log(`[verbose] Command stderr: ${stderr}`)
-        }
-        
+        const { stdout } = await execAsync(command, { maxBuffer: 10 * 1024 * 1024, windowsHide: true, timeout: 60000 })
         return stdout
       } catch (error) {
         lastError = error
-        
-        if (verbose) {
-          api.log(`[verbose] Command failed (attempt ${attempt}): ${error.message}`)
-        }
-        
-        if (attempt < maxRetries) {
-          if (verbose) {
-            api.log(`[verbose] Waiting ${retryDelay}s before retry...`)
-          }
-          await new Promise(resolve => setTimeout(resolve, retryDelay * 1000))
-        }
+        if (attempt < maxRetries) await new Promise(resolve => setTimeout(resolve, retryDelay * 1000))
       }
     }
-    
     throw lastError
   }
 
-  // 修復：改進排除文件夾功能（使用合併的排除設置）
   const shouldExcludeFolder = (folderPath, excludeFolders) => {
-    // 如果排除列表為空，不過濾
-    if (!excludeFolders || excludeFolders.length === 0) return false
-    
-    // 將路徑分割成部分
-    const folders = folderPath.split(/[\\/]/).filter(f => f.length > 0)
-    
-    // 檢查路徑中的每個文件夾名稱是否在排除列表中
-    for (const folder of folders) {
-      const folderLower = folder.toLowerCase()
-      for (const excluded of excludeFolders) {
-        // 完全匹配
-        if (folderLower === excluded.toLowerCase()) {
-          return true
-        }
-        // 也支持通配符匹配，例如 "temp*" 匹配 "temp1", "temp2" 等
-        if (excluded.includes('*')) {
-          const pattern = excluded.toLowerCase().replace(/\*/g, '.*')
-          const regex = new RegExp(`^${pattern}$`)
-          if (regex.test(folderLower)) {
-            return true
+    if (!excludeFolders?.length) return false
+    const folders = folderPath.split(/[\\/]/).filter(f => f)
+    return folders.some(f => excludeFolders.some(e => f.toLowerCase() === e.toLowerCase()))
+  }
+
+  const shouldExcludeFile = (filename, excludeExtensions, allowedExtensions) => {
+    const ext = path.extname(filename).toLowerCase().substring(1)
+    if (allowedExtensions?.length) {
+      if (!allowedExtensions.includes(ext)) return true
+      return excludeExtensions?.includes(ext) || false
+    }
+    return excludeExtensions?.includes(ext) || false
+  }
+
+  const matchesPriorityPattern = (filename, patterns) => {
+    if (!patterns?.length) return false
+    const filenameLower = filename.toLowerCase()
+    return patterns.some(pattern => {
+      if (pattern.includes('*')) {
+        return new RegExp(`^${pattern.toLowerCase().replace(/\./g, '\\.').replace(/\*/g, '.*')}$`).test(filenameLower)
+      }
+      return filenameLower === pattern.toLowerCase() || filenameLower.endsWith('.' + pattern.toLowerCase())
+    })
+  }
+
+  const buildExploreUrl = (baseUrl, remoteRootPath, remotePath) => {
+    let fullPath = remoteRootPath.endsWith('/') ? remoteRootPath : remoteRootPath + '/'
+    if (remotePath && remotePath !== '/') fullPath += remotePath.replace(/^\//, '')
+    if (!fullPath.startsWith('/')) fullPath = '/' + fullPath
+    return `${baseUrl}/~/api/get_file_list?uri=${encodeURIComponent(fullPath)}`
+  }
+
+  const buildDownloadUrl = (remoteAddress, remotePath) => {
+    let baseUrl = remoteAddress.endsWith('/') ? remoteAddress : remoteAddress + '/'
+    if (!remotePath || remotePath === '/') return baseUrl
+    return baseUrl + remotePath.replace(/^\//, '')
+  }
+
+  const getRemoteFileList = async (exploreUrl, targetName, username, password) => {
+    const maxRetries = api.getConfig('maxRetries')
+    const retryDelay = api.getConfig('retryDelay')
+    try {
+      let command = `curl -s --connect-timeout 30`
+      if (username && password) command += ` -u "${username}:${password}"`
+      command += ` "${exploreUrl}"`
+      const stdout = await requestWithRetry(command, maxRetries, retryDelay)
+      if (!stdout?.trim()) throw new Error('Empty response')
+      let jsonStr = stdout.trim()
+      const firstBrace = jsonStr.indexOf('{')
+      const lastBrace = jsonStr.lastIndexOf('}')
+      if (firstBrace === -1 || lastBrace === -1) throw new Error('No JSON found')
+      jsonStr = jsonStr.substring(firstBrace, lastBrace + 1)
+      return (JSON.parse(jsonStr).list || []).map(item => ({
+        n: item.n,
+        s: item.s || 0,
+        m: item.m || null,
+        c: item.c || null
+      }))
+    } catch (error) {
+      logError(`[${targetName}] Failed to get remote file list: ${error.message}`)
+      throw error
+    }
+  }
+
+  const scanLocalDirectory = (dirPath, excludeFiles, excludeFolders, allowedExtensions) => {
+    const files = {}
+    const subDirs = {}
+    try {
+      if (!fs.existsSync(dirPath)) return { files, subDirs, scannedAt: new Date().toISOString(), error: 'Directory not found' }
+      const entries = fs.readdirSync(dirPath, { withFileTypes: true })
+      for (const entry of entries) {
+        if (isSyncMetaFile(entry.name)) continue
+        if (entry.isFile()) {
+          if (!shouldExcludeFile(entry.name, excludeFiles, allowedExtensions)) {
+            try {
+              const stat = fs.statSync(path.join(dirPath, entry.name))
+              files[entry.name] = { size: stat.size, mtime: stat.mtime.toISOString(), ctime: (stat.birthtime || stat.ctime).toISOString() }
+            } catch (e) {
+              files[entry.name] = { size: 0, mtime: new Date().toISOString(), ctime: new Date().toISOString() }
+            }
+          }
+        } else if (entry.isDirectory() && !shouldExcludeFolder(entry.name, excludeFolders)) {
+          try {
+            subDirs[entry.name] = { mtime: fs.statSync(path.join(dirPath, entry.name)).mtime.toISOString() }
+          } catch (e) {
+            subDirs[entry.name] = { mtime: new Date().toISOString() }
           }
         }
       }
-    }
-    return false
-  }
-
-  const shouldExcludeFile = (filename, excludeExtensions) => {
-    const ext = path.extname(filename).toLowerCase().substring(1)
-    return excludeExtensions.includes(ext)
-  }
-
-  // 新增：檢查文件是否匹配優先下載模式
-  const matchesPriorityPattern = (filename, patterns) => {
-    if (!patterns || patterns.length === 0) return false
-    
-    const filenameLower = filename.toLowerCase()
-    
-    for (const pattern of patterns) {
-      // 處理通配符模式
-      if (pattern.includes('*')) {
-        const regexPattern = pattern.toLowerCase()
-          .replace(/\./g, '\\.')
-          .replace(/\*/g, '.*')
-        const regex = new RegExp(`^${regexPattern}$`)
-        if (regex.test(filenameLower)) {
-          return true
-        }
-      } 
-      // 直接匹配擴展名或完整文件名
-      else if (filenameLower === pattern.toLowerCase() || 
-               filenameLower.endsWith('.' + pattern.toLowerCase())) {
-        return true
-      }
-    }
-    
-    return false
-  }
-
-  const getRemoteFileList = async (remoteAddress, targetName, api, username, password) => {
-    const verbose = api.getConfig('verboseDebug')
-    const trace = api.getConfig('traceDebug')
-    const maxRetries = api.getConfig('maxRetries')
-    const retryDelay = api.getConfig('retryDelay')
-
-    try {
-      let apiUrl
-      try {
-        apiUrl = new URL(remoteAddress)
-      } catch (urlError) {
-        throw new Error(`Invalid URL: ${remoteAddress}`)
-      }
-      
-      const baseUrl = `${apiUrl.protocol}//${apiUrl.host}`
-      const remotePath = apiUrl.pathname
-      
-      const apiEndpoint = `${baseUrl}/~/api/get_file_list?uri=${encodeURIComponent(remotePath)}`
-
-      if (trace) {
-        api.log(`[trace] [${targetName}] Fetching: ${apiEndpoint}`)
-      }
-
-      let command = `curl -s --connect-timeout 30`
-      
-      // 添加认证信息
-      if (username && password) {
-        command += ` -u "${username}:${password}"`
-      }
-      
-      command += ` "${apiEndpoint}"`
-      
-      const stdout = await requestWithRetry(command, maxRetries, retryDelay, verbose, trace)
-
-      if (!stdout || stdout.trim() === '') {
-        throw new Error('Empty response from server')
-      }
-
-      let jsonStr = stdout.trim()
-      
-      const firstBrace = jsonStr.indexOf('{')
-      const lastBrace = jsonStr.lastIndexOf('}')
-      
-      if (firstBrace === -1 || lastBrace === -1) {
-        api.log(`[error] [${targetName}] No JSON object found in response`)
-        throw new Error('No JSON object found in response')
-      }
-      
-      jsonStr = jsonStr.substring(firstBrace, lastBrace + 1)
-
-      if (trace) {
-        api.log(`[trace] [${targetName}] JSON response: ${jsonStr.substring(0, 500)}${jsonStr.length > 500 ? '...' : ''}`)
-      }
-
-      let response
-      try {
-        response = JSON.parse(jsonStr)
-      } catch (parseError) {
-        api.log(`[error] [${targetName}] Invalid JSON response`)
-        throw new Error(`Invalid JSON response: ${parseError.message}`)
-      }
-
-      return response.list || []
-    } catch (error) {
-      api.log(`[error] [${targetName}] Failed to get remote file list: ${error.message}`)
-      throw error
-    }
+    } catch (e) {}
+    return { files, subDirs, scannedAt: new Date().toISOString() }
   }
 
   const formatBytes = (bytes, decimals = 2) => {
     if (bytes === 0) return '0 Bytes'
     const k = 1024
-    const dm = decimals < 0 ? 0 : decimals
     const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB']
     const i = Math.floor(Math.log(bytes) / Math.log(k))
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i]
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(decimals)) + ' ' + sizes[i]
   }
 
-  const shouldDownloadFile = (localPath, remoteSize, overwrite) => {
-    if (!fs.existsSync(localPath)) {
-      return true
-    }
-    
+  const isTimestampMatch = (remoteTime, localTime, toleranceSeconds = DEFAULT_TIMESTAMP_TOLERANCE) => {
+    if (!remoteTime || !localTime) return false
     try {
-      const stat = fs.statSync(localPath)
-      if (stat.isDirectory()) {
-        return false
-      }
-      
-      if (overwrite) {
-        return true
-      }
-      
-      return stat.size !== remoteSize
-      
-    } catch (error) {
-      return true
-    }
+      return Math.abs(new Date(remoteTime) - new Date(localTime)) / 1000 <= toleranceSeconds
+    } catch (e) { return false }
   }
 
-  // 修改：下載函數 - 使用單線程 (split=1)，因為有重試機制
-  const downloadWithAria2 = async (remoteUrl, localPath, targetName, api, username, password) => {
-    const aria2cPath = api.getConfig('aria2Path')
-    const speedLimit = api.getConfig('speedLimit')
-    const overwrite = api.getConfig('overwrite')
-    const verbose = api.getConfig('verboseDebug')
-    const trace = api.getConfig('traceDebug')
-    const maxRetries = api.getConfig('maxRetries')
-    const retryDelay = api.getConfig('retryDelay')
-
-    const dir = path.dirname(localPath)
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true })
-    }
-
-    const fileName = path.basename(localPath)
-    const safeFileName = fileName.replace(/[<>:"/\\|?*%]/g, '_')
-    
-    if (fileName !== safeFileName && trace) {
-      api.log(`[trace] [${targetName}] Renamed: ${fileName} -> ${safeFileName}`)
-    }
-
-    const encodedRemoteUrl = remoteUrl.replace(/ /g, '%20')
-
-    // 單線程下載 (split=1)，因為有重試機制，多線程反而可能造成問題
-    let args = [
-      `"${aria2cPath}"`,
-      `--dir="${dir}"`,
-      `--out="${safeFileName}"`,
-      overwrite ? '--allow-overwrite=true' : '--allow-overwrite=false',
-      '--auto-file-renaming=false',
-      '--continue=true',
-      `--max-tries=${maxRetries}`,
-      `--retry-wait=${retryDelay}`,
-      '--max-concurrent-downloads=1',
-      '--split=1',  // 單線程下載
-      '--timeout=60',
-      '--connect-timeout=30',
-      '--max-connection-per-server=1',  // 每個伺服器只用1個連接
-      '--disable-ipv6=true',
-      '--human-readable=true',
-      '--file-allocation=none'
-    ]
-
-    // 添加认证信息
-    if (username && password) {
-      args.push(`--http-user="${username}"`)
-      args.push(`--http-passwd="${password}"`)
-    }
-
-    if (speedLimit > 0) {
-      args.push(`--max-overall-download-limit=${speedLimit}K`)
-      args.push(`--max-download-limit=${speedLimit}K`)
-    }
-
-    args.push('--console-log-level=warn')
-    args.push(`"${encodedRemoteUrl}"`)
-
-    const command = args.join(' ')
-
+  const setFileTimestamps = async (filePath, mtime, ctime) => {
     try {
-      const { stdout, stderr } = await execAsync(command, {
-        maxBuffer: 10 * 1024 * 1024,
-        windowsHide: true,
-        encoding: 'utf8'
-      })
-      
-      if (stderr && (stderr.includes('404') || stderr.includes('Not Found'))) {
-        const error = new Error(`File not found (404): ${remoteUrl}`)
-        error.code = 404
-        throw error
+      if (!mtime && !ctime) return
+      const mtimeDate = mtime ? new Date(mtime) : null
+      const ctimeDate = ctime ? new Date(ctime) : null
+      if (mtimeDate && !isNaN(mtimeDate)) {
+        fs.utimesSync(filePath, ctimeDate && !isNaN(ctimeDate) ? ctimeDate : mtimeDate, mtimeDate)
       }
-      
-      if (stderr && stderr.includes('error') && !stderr.includes('Download complete') && !stderr.includes('STATS')) {
-        throw new Error(stderr)
-      }
-      
-      if (fileName !== safeFileName && fs.existsSync(path.join(dir, safeFileName))) {
+      if (ctimeDate && !isNaN(ctimeDate) && process.platform === 'win32') {
         try {
-          fs.renameSync(path.join(dir, safeFileName), path.join(dir, fileName))
-        } catch (renameError) {
-          if (trace) {
-            api.log(`[trace] [${targetName}] Rename failed: ${renameError.message}`)
-          }
+          await execAsync(`powershell -Command "(Get-Item '${filePath}').CreationTime = [DateTime]::Parse('${ctimeDate.toISOString()}')"`, { windowsHide: true })
+        } catch (e) {}
+      }
+    } catch (e) {}
+  }
+
+  const checkFileExistsOnDisk = (localPath, expectedSize, expectedMtime) => {
+    try {
+      if (fs.existsSync(localPath)) {
+        const localStat = fs.statSync(localPath)
+        return {
+          exists: true,
+          sizeMatch: localStat.size === expectedSize,
+          timeMatch: expectedMtime ? isTimestampMatch(expectedMtime, localStat.mtime.toISOString()) : false,
+          localSize: localStat.size,
+          localMtime: localStat.mtime.toISOString(),
+          localCtime: (localStat.birthtime || localStat.ctime).toISOString()
         }
       }
-      
-      if (verbose) {
-        const fileSize = fs.statSync(path.join(dir, safeFileName || fileName)).size
-        api.log(`[verbose] [${targetName}] Downloaded: ${localPath} (${formatBytes(fileSize)})`)
+    } catch (e) {}
+    return { exists: false, sizeMatch: false, timeMatch: false, localSize: 0, localMtime: null, localCtime: null }
+  }
+
+  const downloadWithAria2 = async (remoteUrl, localPath, targetName, username, password, expectedMtime, expectedCtime) => {
+    const aria2cPath = api.getConfig('aria2Path') || 'aria2c.exe'
+    const speedLimit = api.getConfig('speedLimit') || 0
+    const maxRetries = api.getConfig('maxRetries') || 3
+    const retryDelay = api.getConfig('retryDelay') || 5
+    let aria2Executable = aria2cPath
+    if (!fs.existsSync(aria2Executable)) {
+      try {
+        const { stdout } = await execAsync(`where aria2c`, { windowsHide: true })
+        if (stdout?.trim()) aria2Executable = stdout.trim().split('\n')[0]
+        else throw new Error('aria2c not found')
+      } catch (e) {
+        throw new Error(`aria2c not found. Please install aria2 or configure correct path.`)
       }
-      
-      return true
-    } catch (error) {
-      if (error.code === 404) {
-        throw new Error(`File not found (404)`)
-      }
-      if (trace) {
-        throw new Error(`Download failed: ${error.message}\nstderr: ${error.stderr}`)
-      } else {
-        throw new Error(`Download failed`)
+    }
+    const dir = path.dirname(localPath)
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+    const fileName = path.basename(localPath)
+    const safeFileName = fileName.replace(ILLEGAL_FILENAME_CHARS, '_')
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        let args = [
+          `"${aria2Executable}"`,
+          `--dir="${dir}"`,
+          `--out="${safeFileName}"`,
+          '--allow-overwrite=true',
+          '--auto-file-renaming=false',
+          '--continue=true',
+          `--max-tries=1`,
+          `--retry-wait=${retryDelay}`,
+          '--max-concurrent-downloads=1',
+          '--split=1',
+          '--timeout=60',
+          '--connect-timeout=30',
+          '--max-connection-per-server=1',
+          '--disable-ipv6=true',
+          '--quiet=true',
+          '--summary-interval=0',
+          '--console-log-level=error'
+        ]
+        if (username && password) {
+          args.push(`--http-user="${username}"`)
+          args.push(`--http-passwd="${password}"`)
+        }
+        if (speedLimit > 0) {
+          args.push(`--max-overall-download-limit=${speedLimit}K`)
+          args.push(`--max-download-limit=${speedLimit}K`)
+        }
+        args.push(`"${remoteUrl}"`)
+        await execAsync(args.join(' '), { maxBuffer: 10 * 1024 * 1024, windowsHide: true, timeout: 300000 })
+        if (fileName !== safeFileName && fs.existsSync(path.join(dir, safeFileName))) {
+          try { 
+            if (fs.existsSync(path.join(dir, fileName))) fs.unlinkSync(path.join(dir, fileName))
+            fs.renameSync(path.join(dir, safeFileName), path.join(dir, fileName)) 
+          } catch (e) {}
+        }
+        if (fs.existsSync(localPath) && fs.statSync(localPath).size > 0) {
+          if (expectedMtime || expectedCtime) await setFileTimestamps(localPath, expectedMtime, expectedCtime)
+          return { success: true, size: fs.statSync(localPath).size }
+        }
+        throw new Error('Download verification failed')
+      } catch (error) {
+        if (attempt < maxRetries) {
+          logDebug(`[sync] [${targetName}] Retrying download (${attempt}/${maxRetries})`)
+          await new Promise(resolve => setTimeout(resolve, retryDelay * 1000))
+        } else throw error
       }
     }
   }
 
-  // ==================== 重試失敗的文件 ====================
+  const compareDualLists = (remoteList, localList) => {
+    const result = {
+      hasChanges: false,
+      filesToDownload: [],
+      filesToFixTimestamp: [],
+      filesToDelete: [],
+      dirsToDelete: [],
+      newRemoteDirs: [],
+      remoteList,
+      localList,
+      summary: {
+        filesToAdd: 0,
+        filesToUpdate: 0,
+        filesToFixTimestamp: 0,
+        filesToRemove: 0,
+        dirsToAdd: 0,
+        dirsToRemove: 0,
+        totalBytesToDownload: 0,
+        sizeOnlyFiles: 0,
+        dualVerifyFiles: 0
+      }
+    }
+    const remoteFiles = remoteList?.files || {}
+    const remoteDirs = remoteList?.subDirs || {}
+    const localFiles = localList?.files || {}
+    const localDirs = localList?.subDirs || {}
+    
+    for (const [fileName, remoteInfo] of Object.entries(remoteFiles)) {
+      const localInfo = localFiles[fileName]
+      const useDualVerification = needsDualVerification(fileName)
+      if (!localInfo) {
+        result.filesToDownload.push({ name: fileName, size: remoteInfo.size, mtime: remoteInfo.mtime, ctime: remoteInfo.ctime, reason: 'missing', isPriority: remoteInfo.isPriority || false, useDualVerification })
+        result.summary.filesToAdd++
+        result.summary.totalBytesToDownload += remoteInfo.size
+        result.hasChanges = true
+      } else if (localInfo.size !== remoteInfo.size) {
+        result.filesToDownload.push({ name: fileName, size: remoteInfo.size, mtime: remoteInfo.mtime, ctime: remoteInfo.ctime, reason: 'size_changed', isPriority: remoteInfo.isPriority || false, useDualVerification })
+        result.summary.filesToUpdate++
+        result.summary.totalBytesToDownload += remoteInfo.size
+        result.hasChanges = true
+      } else if (remoteInfo.mtime && !isTimestampMatch(remoteInfo.mtime, localInfo.mtime)) {
+        if (useDualVerification) {
+          result.filesToDownload.push({ name: fileName, size: remoteInfo.size, mtime: remoteInfo.mtime, ctime: remoteInfo.ctime, reason: 'timestamp_mismatch', isPriority: remoteInfo.isPriority || false, useDualVerification: true })
+          result.summary.filesToUpdate++
+          result.summary.totalBytesToDownload += remoteInfo.size
+          result.summary.dualVerifyFiles++
+        } else {
+          result.filesToFixTimestamp.push({ name: fileName, mtime: remoteInfo.mtime, ctime: remoteInfo.ctime })
+          result.summary.filesToFixTimestamp++
+          result.summary.sizeOnlyFiles++
+        }
+        result.hasChanges = true
+      }
+    }
+    for (const [fileName, localInfo] of Object.entries(localFiles)) {
+      if (!remoteFiles[fileName]) {
+        result.filesToDelete.push({ name: fileName, size: localInfo.size })
+        result.summary.filesToRemove++
+        result.hasChanges = true
+      }
+    }
+    for (const dirName of Object.keys(remoteDirs)) {
+      if (!localDirs[dirName]) {
+        result.newRemoteDirs.push({ name: dirName })
+        result.summary.dirsToAdd++
+        result.hasChanges = true
+      }
+    }
+    for (const dirName of Object.keys(localDirs)) {
+      if (!remoteDirs[dirName]) {
+        result.dirsToDelete.push({ name: dirName })
+        result.summary.dirsToRemove++
+        result.hasChanges = true
+      }
+    }
+    return result
+  }
 
-  const retryFailedFiles = async (targetRoot, target) => {
+  const processTarget = async (target, targetRoot, shouldStopFn) => {
     const debug = api.getConfig('debug')
-    const maxRetries = api.getConfig('maxRetries')
-    const fileDelay = api.getConfig('fileDelay')
+    const verbose = api.getConfig('verboseDebug')
     const targetName = target.name
-    
-    if (!fs.existsSync(targetRoot)) return
+    const fileDelay = api.getConfig('fileDelay')
+    const downloadConcurrency = api.getConfig('concurrentDownloads') || 1
 
-    const failedQueue = loadFailedQueue(targetRoot, targetName)
-    
-    if (failedQueue.files.length === 0) {
+    if (target.enabled === false) {
+      logDebug(`[sync] [${targetName}] Disabled, skipping`)
       return
     }
-
-    if (debug) {
-      api.log(`[sync] [${targetName}] Retrying ${failedQueue.files.length} failed files...`)
+    if (!shouldScanTarget(target)) {
+      logDebug(`[sync] [${targetName}] Not due for sync`)
+      return
     }
-
-    // 路徑清理函數
-    const cleanRemotePath = (remotePath) => {
-      let cleanPath = remotePath.replace(/^[\\/]+/, '')
-      cleanPath = cleanPath.replace(/\\/g, '/')
-      return cleanPath
+    
+    logDebug(`[sync] [${targetName}] Starting sync -> ${targetRoot}`)
+    if (!fs.existsSync(targetRoot)) fs.mkdirSync(targetRoot, { recursive: true })
+    
+    let globalState = loadGlobalSyncState(targetRoot)
+    const isResuming = globalState?.state === 'paused'
+    
+    if (!globalState || globalState.version !== MANIFEST_VERSION) {
+      globalState = createGlobalSyncState(targetName, targetRoot)
     }
-
-    const stats = { succeeded: 0, failed: 0, skipped: 0 }
-    const remainingFiles = []
-
-    for (const failedFile of failedQueue.files) {
-      // 清理路徑
-      const originalPath = failedFile.remotePath
-      const cleanPath = cleanRemotePath(originalPath)
-      
-      if (originalPath !== cleanPath && debug) {
-        api.log(`[sync] [${targetName}] Cleaned path: ${originalPath} -> ${cleanPath}`)
-        failedFile.remotePath = cleanPath
+    if (!isResuming) {
+      globalState.totalDirs = globalState.processedDirs = globalState.totalFiles = globalState.downloadedFiles = globalState.failedFiles = globalState.timestampFixedFiles = 0
+      globalState.completedDirs = globalState.errors = []
+    }
+    globalState.state = 'syncing'
+    globalState.syncStartTime = globalState.syncStartTime || new Date().toISOString()
+    saveGlobalSyncState(targetRoot, globalState)
+    
+    if (target.enableSlimeMold) {
+      let slimeNetwork = loadSlimeNetwork(targetRoot)
+      if (!slimeNetwork) {
+        slimeNetwork = createSlimeNetwork(targetName, targetRoot, target.syncInterval || 3)
+        saveSlimeNetwork(targetRoot, slimeNetwork)
       }
+    }
+    
+    await retryFailedFiles(targetRoot, target)
 
+    const apiUrl = new URL(target.remoteAddress)
+    const baseUrl = `${apiUrl.protocol}//${apiUrl.host}`
+    const remoteRootPath = apiUrl.pathname
+
+    const syncDirectory = async (remotePath, localPath) => {
+      if (shouldStopFn?.()) {
+        globalState.state = 'paused'
+        saveGlobalSyncState(targetRoot, globalState)
+        return { pendingCount: 0, failedFiles: [], interrupted: true }
+      }
+      if (fileDelay > 0) await new Promise(resolve => setTimeout(resolve, fileDelay))
+      
       try {
-        // 檢查服務器是否可用
-        const apiUrl = new URL(target.remoteAddress)
-        const serverAvailable = await checkServerAvailable(apiUrl, target.username, target.password)
+        globalState.currentProcessingPath = localPath
+        globalState.state = 'scanning'
+        saveGlobalSyncState(targetRoot, globalState)
         
-        if (!serverAvailable) {
-          if (debug) {
-            api.log(`[sync] [${targetName}] Server unavailable, will retry later: ${failedFile.remotePath}`)
+        let nodeData = loadNodeFile(localPath) || createNodeData(path.basename(localPath) || '/', remotePath, localPath)
+        
+        const exploreUrl = buildExploreUrl(baseUrl, remoteRootPath, remotePath)
+        logVerbose(`[verbose] [${targetName}] Exploring: ${exploreUrl}`)
+        
+        const fileList = await getRemoteFileList(exploreUrl, targetName, target.username, target.password)
+        const remoteFiles = {}
+        const remoteSubDirs = {}
+        const excludeSettings = getExcludeSettings(target)
+        const allowedExtensions = getAllowedExtensions(target)
+        
+        for (const item of fileList) {
+          if (!item?.n) continue
+          const isDir = item.n.endsWith('/')
+          const name = isDir ? item.n.slice(0, -1) : item.n
+          if (isDir) {
+            if (!shouldExcludeFolder(name, excludeSettings.excludeFolders)) remoteSubDirs[name] = { mtime: item.m || item.c || new Date().toISOString() }
+          } else if (!shouldExcludeFile(name, excludeSettings.excludeFiles, allowedExtensions)) {
+            remoteFiles[name] = {
+              size: item.s || 0,
+              mtime: item.m || null,
+              ctime: item.c || null,
+              isPriority: matchesPriorityPattern(name, (target.priorityPatterns || '').split(',').map(p => p.trim()).filter(p => p)),
+              useDualVerification: needsDualVerification(name)
+            }
           }
+        }
+        
+        const newRemoteList = { files: remoteFiles, subDirs: remoteSubDirs, scannedAt: new Date().toISOString() }
+        const newLocalList = scanLocalDirectory(localPath, excludeSettings.excludeFiles, excludeSettings.excludeFolders, allowedExtensions)
+        
+        nodeData.syncStatus.phase = 'comparing'
+        saveNodeFile(localPath, nodeData)
+        
+        const comparison = compareDualLists(newRemoteList, newLocalList)
+        Object.assign(nodeData, { remoteList: newRemoteList, localList: newLocalList, comparisonResult: comparison, childrenNames: Object.keys(remoteSubDirs) })
+        nodeData.syncStatus.lastVerify = new Date().toISOString()
+        
+        globalState.totalFiles += Object.keys(remoteFiles).length
+        globalState.totalDirs += Object.keys(remoteSubDirs).length + 1
+        saveGlobalSyncState(targetRoot, globalState)
+        
+        updateSlimeAfterSync(target, targetRoot, remotePath, comparison, nodeData)
+        
+        // Fix timestamps
+        for (const fileToFix of comparison.filesToFixTimestamp) {
+          const localFilePath = path.join(localPath, fileToFix.name)
+          if (fs.existsSync(localFilePath)) {
+            await setFileTimestamps(localFilePath, fileToFix.mtime, fileToFix.ctime)
+            nodeData.syncStatus.timestampFixed++
+          }
+        }
+        globalState.timestampFixedFiles = (globalState.timestampFixedFiles || 0) + nodeData.syncStatus.timestampFixed
+        
+        // Delete files not on remote
+        for (const fileToDelete of comparison.filesToDelete) {
+          try { if (fs.existsSync(path.join(localPath, fileToDelete.name))) fs.unlinkSync(path.join(localPath, fileToDelete.name)) } catch (e) {}
+        }
+        
+        // Delete files to re-download
+        for (const fileToDownload of comparison.filesToDownload) {
+          if (fileToDownload.reason !== 'missing') {
+            try { if (fs.existsSync(path.join(localPath, fileToDownload.name))) fs.unlinkSync(path.join(localPath, fileToDownload.name)) } catch (e) {}
+          }
+        }
+        
+        // Handle directories
+        for (const dirToDelete of comparison.dirsToDelete) {
+          const dirPath = path.join(localPath, dirToDelete.name)
+          try {
+            if (fs.existsSync(dirPath)) {
+              [getNodeFilePath(dirPath), getSlimeMoldPath(dirPath)].forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p) })
+              fs.rmSync(dirPath, { recursive: true, force: true })
+            }
+          } catch (e) {}
+        }
+        for (const newDir of comparison.newRemoteDirs) {
+          const dirPath = path.join(localPath, newDir.name)
+          if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true })
+        }
+        
+        // Download files
+        nodeData.syncStatus.phase = 'downloading'
+        const filesToDownload = comparison.filesToDownload || []
+        const failedFiles = []
+        let downloadedCount = 0
+        
+        if (filesToDownload.length > 0 && !shouldStopFn?.()) {
+          const downloadQueue = [...filesToDownload].sort((a, b) => (b.isPriority ? 1 : 0) - (a.isPriority ? 1 : 0))
+          const activeDownloads = new Set()
+          
+          await new Promise((resolve) => {
+            const processNext = async () => {
+              if (shouldStopFn?.() || (downloadQueue.length === 0 && activeDownloads.size === 0)) {
+                if (activeDownloads.size === 0) resolve()
+                return
+              }
+              while (activeDownloads.size < downloadConcurrency && downloadQueue.length > 0) {
+                const file = downloadQueue.shift()
+                const fileRemotePath = (!remotePath || remotePath === '/' ? '' : remotePath + '/') + file.name
+                const remoteFileUrl = buildDownloadUrl(target.remoteAddress, fileRemotePath)
+                const localFilePath = path.join(localPath, file.name)
+                
+                activeDownloads.add(file.name)
+                if (fileDelay > 0 && downloadedCount > 0) await new Promise(r => setTimeout(r, fileDelay))
+                
+                downloadWithAria2(remoteFileUrl, localFilePath, targetName, target.username, target.password, file.mtime, file.ctime)
+                  .then(() => {
+                    downloadedCount++
+                    removeFromFailedQueue(targetRoot, targetName, fileRemotePath)
+                    globalState.downloadedFiles++
+                    saveGlobalSyncState(targetRoot, globalState)
+                    logDebug(`[sync] [${targetName}] Downloaded: ${file.name} (${formatBytes(file.size)})`)
+                  })
+                  .catch((error) => {
+                    failedFiles.push(file)
+                    addToFailedQueue(targetRoot, targetName, { remotePath: fileRemotePath, localPath: localFilePath, size: file.size, mtime: file.mtime, ctime: file.ctime }, error)
+                    globalState.failedFiles++
+                    saveGlobalSyncState(targetRoot, globalState)
+                    logError(`[${targetName}] Failed: ${file.name}`)
+                  })
+                  .finally(() => {
+                    activeDownloads.delete(file.name)
+                    processNext()
+                  })
+              }
+            }
+            processNext()
+          })
+        }
+        
+        nodeData.syncStatus.phase = failedFiles.length > 0 ? 'partial' : 'synced'
+        Object.assign(nodeData.syncStatus, {
+          filesTotal: Object.keys(remoteFiles).length,
+          filesSynced: downloadedCount,
+          filesFailed: failedFiles.length,
+          lastSync: new Date().toISOString(),
+          syncEndTime: new Date().toISOString()
+        })
+        nodeData.comparisonResult.filesToDownload = failedFiles
+        saveNodeFile(localPath, nodeData)
+        
+        globalState.processedDirs++
+        globalState.completedDirs = globalState.completedDirs || []
+        globalState.completedDirs.push(localPath)
+        saveGlobalSyncState(targetRoot, globalState)
+        
+        // Process children
+        let totalPending = failedFiles.length
+        for (const childName of nodeData.childrenNames) {
+          if (shouldStopFn?.()) {
+            globalState.state = 'paused'
+            saveGlobalSyncState(targetRoot, globalState)
+            return { pendingCount: totalPending, failedFiles: [...failedFiles], interrupted: true }
+          }
+          const childResult = await syncDirectory(
+            (!remotePath || remotePath === '/' ? '' : remotePath + '/') + childName,
+            path.join(localPath, childName)
+          )
+          totalPending += childResult.pendingCount
+          if (childResult.interrupted) return { pendingCount: totalPending, failedFiles: [...failedFiles], interrupted: true }
+        }
+        return { pendingCount: totalPending, failedFiles: [...failedFiles], interrupted: false }
+      } catch (error) {
+        logError(`[${targetName}] Sync failed: ${error.message}`)
+        globalState.errors = globalState.errors || []
+        globalState.errors.push({ path: localPath, error: error.message, timestamp: new Date().toISOString() })
+        saveGlobalSyncState(targetRoot, globalState)
+        return { pendingCount: 0, failedFiles: [], interrupted: false }
+      }
+    }
+
+    const result = await syncDirectory('', targetRoot)
+    
+    if (result.interrupted) {
+      globalState.state = 'paused'
+    } else {
+      globalState.state = 'completed'
+      globalState.syncEndTime = new Date().toISOString()
+      targetLastScanTime[targetName] = Date.now()
+      if (target.enableSlimeMold) {
+        let network = loadSlimeNetwork(targetRoot)
+        if (network) saveSlimeNetwork(targetRoot, resetSlimeCycle(network))
+      }
+    }
+    saveGlobalSyncState(targetRoot, globalState)
+    
+    logDebug(`[sync] [${targetName}] ${globalState.state} (${globalState.downloadedFiles}/${globalState.totalFiles} files)`)
+    return result
+  }
+
+  const retryFailedFiles = async (targetRoot, target) => {
+    const targetName = target.name
+    if (!fs.existsSync(targetRoot)) return
+    const failedQueue = loadFailedQueue(targetRoot, targetName)
+    if (!failedQueue.files.length) return
+    
+    const remainingFiles = []
+    const maxAttempts = api.getConfig('maxRetries') * 2
+    
+    for (const failedFile of failedQueue.files) {
+      if (failedFile.attempts >= maxAttempts) { remainingFiles.push(failedFile); continue }
+      
+      const diskCheck = checkFileExistsOnDisk(failedFile.localPath, failedFile.size, failedFile.mtime)
+      if (diskCheck.exists && diskCheck.sizeMatch && diskCheck.timeMatch) continue
+      if (diskCheck.exists) try { fs.unlinkSync(failedFile.localPath) } catch (e) {}
+      
+      try {
+        const apiUrl = new URL(target.remoteAddress)
+        if (!await checkServerAvailable(apiUrl, target.username, target.password)) {
           remainingFiles.push(failedFile)
           continue
         }
-
-        // 構建遠程 URL
-        const baseUrl = target.remoteAddress.endsWith('/') ? target.remoteAddress : target.remoteAddress + '/'
-        const remoteFileUrl = baseUrl + failedFile.remotePath
-
-        // 確保本地目錄存在
-        const localDir = path.dirname(failedFile.localPath)
-        if (!fs.existsSync(localDir)) {
-          fs.mkdirSync(localDir, { recursive: true })
-        }
-
-        if (debug) {
-          api.log(`[sync] [${targetName}] Retrying file: ${failedFile.remotePath} (attempt ${failedFile.attempts + 1})`)
-        }
-
-        // 嘗試下載
-        await downloadWithAria2(remoteFileUrl, failedFile.localPath, targetName, api, target.username, target.password)
-
-        // 下載成功
-        stats.succeeded++
-        
-        if (debug) {
-          api.log(`[sync] [${targetName}] Successfully retried: ${failedFile.remotePath}`)
-        }
-
-        // 更新 manifest
-        const dirManifest = loadDirectoryManifest(localDir, targetName)
-        if (dirManifest) {
-          const fileName = path.basename(failedFile.localPath)
-          const fileEntry = dirManifest.files.find(f => f.name === fileName)
-          if (fileEntry) {
-            fileEntry.status = 'completed'
-            fileEntry.attempts = 0
-            dirManifest.stats.syncedFiles++
-            dirManifest.stats.syncedSize += failedFile.size
-            saveDirectoryManifest(localDir, targetName, dirManifest)
-          }
-        }
-
+        await downloadWithAria2(buildDownloadUrl(target.remoteAddress, failedFile.remotePath), failedFile.localPath, targetName, target.username, target.password, failedFile.mtime, failedFile.ctime)
       } catch (error) {
-        // 下載失敗
         failedFile.attempts++
-        failedFile.error = error.message
+        failedFile.error = error.message?.substring(0, 100) || 'Unknown'
         failedFile.timestamp = new Date().toISOString()
         remainingFiles.push(failedFile)
-        stats.failed++
-        
-        if (debug) {
-          api.log(`[sync] [${targetName}] Retry failed: ${failedFile.remotePath} (${error.message})`)
-        }
-      }
-
-      // 文件間延遲
-      if (fileDelay > 0) {
-        await new Promise(resolve => setTimeout(resolve, fileDelay))
       }
     }
-
-    // 更新失敗隊列
     failedQueue.files = remainingFiles
     saveFailedQueue(targetRoot, targetName, failedQueue)
-
-    // 顯示統計信息
-    if (debug && (stats.succeeded > 0 || stats.failed > 0)) {
-      api.log(`[sync] [${targetName}] Retry summary: ${stats.succeeded} succeeded, ${stats.failed} failed`)
-    }
   }
 
-  // ==================== 簡化版完整性檢查（基於 manifest） ====================
-  const performQuickIntegrityCheck = async (target, targetRoot) => {
-    const debug = api.getConfig('debug')
-    const verbose = api.getConfig('verboseDebug')
-    const targetName = target.name
-    
-    if (debug) {
-      api.log(`[sync] [${targetName}] Performing quick integrity check...`)
-    }
-
-    // 檢查目標目錄是否存在
-    if (!fs.existsSync(targetRoot)) {
-      if (debug) {
-        api.log(`[sync] [${targetName}] Target directory does not exist! Resetting completion status...`)
-      }
-      
-      // 目錄不存在，重置完成狀態
-      const globalState = loadGlobalState(targetRoot)
-      if (globalState.completedTargets) {
-        delete globalState.completedTargets[targetName]
-      }
-      saveGlobalState(targetRoot, globalState)
-      
-      // 創建目錄
-      fs.mkdirSync(targetRoot, { recursive: true })
-      
-      // 啟動完整同步
-      if (debug) {
-        api.log(`[sync] [${targetName}] Starting full sync due to missing directory...`)
-      }
-      return true // 需要同步
-    }
-
-    // 加載根目錄的 manifest
-    const rootManifest = loadDirectoryManifest(targetRoot, targetName)
-    if (!rootManifest) {
-      if (debug) {
-        api.log(`[sync] [${targetName}] No manifest found - will perform full sync`)
-      }
-      return true // 需要同步
-    }
-
-    // 遞迴檢查所有目錄的完整性
-    const checkDirectoryIntegrity = (dirPath, manifestPath) => {
-      if (!fs.existsSync(dirPath)) {
-        return false
-      }
-
-      const manifest = loadDirectoryManifest(dirPath, targetName)
-      if (!manifest) {
-        return false
-      }
-
-      // 計算當前目錄的實際大小
-      let actualSize = 0
-      let actualFiles = 0
-      
-      try {
-        const items = fs.readdirSync(dirPath)
-        for (const item of items) {
-          if (item === getManifestFileName(targetName)) continue
-          
-          const itemPath = path.join(dirPath, item)
-          try {
-            const stat = fs.statSync(itemPath)
-            if (stat.isFile()) {
-              actualSize += stat.size
-              actualFiles++
-            }
-          } catch (e) {
-            // ignore
-          }
-        }
-      } catch (e) {
-        return false
-      }
-
-      // 比對 manifest 中的統計數據
-      const expectedSize = manifest.stats?.syncedSize || 0
-      const expectedFiles = manifest.stats?.syncedFiles || 0
-
-      // 如果大小或文件數量不匹配，說明有問題
-      if (actualSize !== expectedSize || actualFiles !== expectedFiles) {
-        if (verbose) {
-          api.log(`[verbose] [${targetName}] Directory mismatch: ${path.relative(targetRoot, dirPath)}`)
-          api.log(`[verbose]   Expected: ${expectedFiles} files, ${formatBytes(expectedSize)}`)
-          api.log(`[verbose]   Actual: ${actualFiles} files, ${formatBytes(actualSize)}`)
-        }
-        return false
-      }
-
-      // 遞迴檢查子目錄
-      for (const subDir of manifest.subDirs || []) {
-        const subDirPath = path.join(dirPath, subDir.name)
-        if (!checkDirectoryIntegrity(subDirPath, subDir.name)) {
-          return false
-        }
-      }
-
-      return true
-    }
-
-    // 執行完整性檢查
-    const isIntegrity = checkDirectoryIntegrity(targetRoot, '/')
-
-    if (!isIntegrity) {
-      if (debug) {
-        api.log(`[sync] [${targetName}] Integrity check failed - resetting completion status`)
-      }
-      
-      // 重置完成狀態
-      const globalState = loadGlobalState(targetRoot)
-      if (globalState.completedTargets) {
-        delete globalState.completedTargets[targetName]
-      }
-      saveGlobalState(targetRoot, globalState)
-      
-      return true // 需要同步
-    }
-
-    if (debug) {
-      api.log(`[sync] [${targetName}] Integrity check passed`)
-    }
-    
-    return false // 不需要同步
-  }
-
-  // ==================== 並行下載輔助函數 ====================
-
-  /**
-   * 並行下載多個文件
-   * @param {Array} files - 要下載的文件列表
-   * @param {Function} downloadFn - 單個文件下載函數
-   * @param {number} concurrency - 並行數量
-   * @param {Function} shouldStopFn - 停止檢查函數
-   * @param {Object} target - 目標配置
-   * @param {Object} manifest - manifest 對象
-   * @param {string} dirPath - 目錄路徑
-   * @param {string} remotePath - 遠程路徑
-   * @param {Object} stats - 統計對象
-   * @param {string} targetRoot - 目標根目錄
-   */
-  const downloadFilesInParallel = async (files, downloadFn, concurrency, shouldStopFn, target, manifest, dirPath, remotePath, stats, targetRoot) => {
-    const targetName = target.name
-    const debug = api.getConfig('debug')
-    const fileDelay = api.getConfig('fileDelay')
-    
-    let activeDownloads = 0
-    let fileIndex = 0
-    let stopped = false
-
-    return new Promise((resolve) => {
-      const downloadNext = async () => {
-        // 檢查是否應該停止
-        if (stopped || (shouldStopFn && shouldStopFn())) {
-          stopped = true
-          // 等待所有進行中的下載完成
-          if (activeDownloads === 0) {
-            resolve()
-          }
-          return
-        }
-
-        // 沒有更多文件要下載
-        if (fileIndex >= files.length) {
-          // 等待所有進行中的下載完成
-          if (activeDownloads === 0) {
-            resolve()
-          }
-          return
-        }
-
-        // 達到並行上限
-        if (activeDownloads >= concurrency) {
-          return
-        }
-
-        const file = files[fileIndex++]
-        
-        // 跳過已完成的文件
-        if (file.status === 'completed') {
-          downloadNext()
-          return
-        }
-
-        activeDownloads++
-
-        try {
-          file.status = 'downloading'
-          saveDirectoryManifest(dirPath, targetName, manifest)
-
-          await downloadFn(file)
-
-          file.status = 'completed'
-          manifest.stats.syncedFiles++
-          manifest.stats.syncedSize += file.size
-          
-          stats.downloaded.push(`[${targetName}] ${path.join(remotePath, file.name)}`)
-          stats.totalBytes += file.size
-
-          removeFromFailedQueue(targetRoot, targetName, path.join(remotePath, file.name))
-
-        } catch (error) {
-          file.attempts++
-          
-          if (error.message.includes('404')) {
-            file.status = 'completed'
-            file.attempts = 0
-            api.log(`[warn] [${targetName}] File not found (404), skipping: ${file.name}`)
-          } else {
-            file.status = 'failed'
-            api.log(`[error] [${targetName}] Failed to download ${file.name}: ${error.message}`)
-            addToFailedQueue(targetRoot, targetName, {
-              targetName: targetName,
-              remotePath: path.join(remotePath, file.name),
-              localPath: path.join(dirPath, file.name),
-              size: file.size,
-              attempts: file.attempts,
-              isPriority: file.isPriority
-            }, error)
-            stats.errors.push({ target: targetName, file: path.join(remotePath, file.name), error: error.message })
-          }
-        } finally {
-          saveDirectoryManifest(dirPath, targetName, manifest)
-          activeDownloads--
-
-          // 文件間延遲
-          if (fileDelay > 0) {
-            await new Promise(r => setTimeout(r, fileDelay))
-          }
-
-          // 繼續下載下一個文件
-          downloadNext()
-        }
-      }
-
-      // 啟動初始的並行下載
-      for (let i = 0; i < concurrency; i++) {
-        downloadNext()
-      }
-    })
-  }
-
-  // ==================== 核心功能：處理目錄 ====================
-
-  const processDirectory = async (target, dirPath, remotePath, stats, syncState, scanType = 'deep', shouldStopFn) => {
-    const debug = api.getConfig('debug')
-    const verbose = api.getConfig('verboseDebug')
-    const trace = api.getConfig('traceDebug')
-    const mirrorMode = api.getConfig('mirrorMode')
-    const fileDelay = api.getConfig('fileDelay')
-    const overwrite = api.getConfig('overwrite')
-    const targetRoot = target.localDestination
-    const targetName = target.name
-    const concurrentDownloads = api.getConfig('concurrentDownloads') || 3
-    
-    // 新增：檢查是否應該停止的輔助函數
-    const checkShouldStop = () => {
-      if (shouldStopFn && shouldStopFn()) {
-        return true
-      }
-      // 檢查定時窗口
-      const enableScheduledSync = api.getConfig('enableScheduledSync')
-      if (enableScheduledSync && !isWithinScheduledWindow()) {
-        return true
-      }
-      return false
-    }
-    
-    // 在函數開始時檢查
-    if (checkShouldStop()) {
-      if (debug) {
-        api.log(`[sync] [${targetName}] Stopping directory processing at ${remotePath} (window ended)`)
-      }
-      return { subDirs: [], shouldContinue: false, stopped: true }
-    }
-    
-    // 獲取合併的排除設置
-    const excludeSettings = getExcludeSettings(target)
-    const excludeFolders = excludeSettings.excludeFolders
-    const excludeExts = excludeSettings.excludeFiles
-    
-    // 解析優先模式
-    const priorityPatterns = (target.priorityPatterns || '*.mp4,*.mkv,*.avi,*.jpg,*.png,*.pdf')
-      .split(',')
-      .map(p => p.trim())
-      .filter(p => p.length > 0)
-
-    let manifest = getOrCreateDirectoryManifest(dirPath, targetName, remotePath)
-    if (!manifest) {
-      return { subDirs: [], shouldContinue: true }
-    }
-
-    manifest.lastSyncAttempt = new Date().toISOString()
-    manifest.lastScanType = scanType
-
-    try {
-      if (scanType === 'quick') {
-        const { missingFiles, extraFiles } = quickScanDirectory(dirPath, targetName, manifest)
-        
-        if (missingFiles.length > 0 && debug) {
-          api.log(`[sync] [${targetName}] Quick scan found ${missingFiles.length} missing files in ${remotePath}`)
-        }
-
-        for (const file of missingFiles) {
-          file.status = 'pending'
-        }
-
-        if (mirrorMode && extraFiles.length > 0) {
-          for (const extraFile of extraFiles) {
-            const filePath = path.join(dirPath, extraFile.name)
-            try {
-              fs.unlinkSync(filePath)
-              stats.deleted.push(`[${targetName}] ${extraFile.name}`)
-              if (trace) {
-                api.log(`[trace] [${targetName}] Deleted extra file: ${extraFile.name}`)
-              }
-            } catch (e) {
-              // ignore
-            }
-          }
-        }
-
-        const folderStats = getFolderStats(dirPath, targetName)
-        manifest.folderMtime = folderStats.mtime
-        manifest.folderSize = folderStats.totalSize
-        manifest.scanComplete = true
-        saveDirectoryManifest(dirPath, targetName, manifest)
-
-return { 
-    subDirs: manifest.subDirs.map(d => {
-        const cleanRemotePath = remotePath === '/' ? '' : remotePath
-        const subRemotePath = cleanRemotePath ? `${cleanRemotePath}/${d.name}` : d.name
-        return {
-            name: d.name,
-            remotePath: subRemotePath,  // ✅ 修复：正确构建路径
-            localPath: path.join(dirPath, d.name)
-        }
-    }), 
-    shouldContinue: true 
-}
-      }
-
-      let fullRemoteUrl
-      if (remotePath === '/') {
-        fullRemoteUrl = target.remoteAddress
-      } else {
-        const baseUrl = target.remoteAddress.endsWith('/') ? target.remoteAddress : target.remoteAddress + '/'
-        const cleanPath = remotePath.startsWith('/') ? remotePath.substring(1) : remotePath
-        fullRemoteUrl = baseUrl + cleanPath + '/'
-      }
-
-      const fileList = await getRemoteFileList(fullRemoteUrl, targetName, api, target.username, target.password)
-
-      const remoteDirs = []
-      const remoteFiles = []
-
-      for (const item of fileList) {
-        if (!item || !item.n) continue
-
-        const isDir = item.n.endsWith('/')
-        const name = isDir ? item.n.slice(0, -1) : item.n
-        const fullRemotePath = remotePath === '/' ? name : path.join(remotePath, name).replace(/\\/g, '/')
-
-        if (isDir) {
-          // 使用合併的排除文件夾檢查
-          if (!shouldExcludeFolder(fullRemotePath, excludeFolders)) {
-            remoteDirs.push({
-              name: name,
-              remotePath: fullRemotePath,
-              localPath: path.join(dirPath, name)
-            })
-          } else if (trace) {
-            api.log(`[trace] [${targetName}] Excluded folder: ${fullRemotePath}`)
-          }
-        } else {
-          if (!shouldExcludeFile(name, excludeExts)) {
-            const modTime = item.m || item.c || new Date().toISOString()
-            remoteFiles.push({
-              name: name,
-              remotePath: fullRemotePath,
-              localPath: path.join(dirPath, name),
-              size: item.s || 0,
-              modTime: modTime
-            })
-          } else if (trace) {
-            api.log(`[trace] [${targetName}] Excluded file by extension: ${name}`)
-          }
-        }
-      }
-
-      const newSubDirs = []
-      for (const remoteDir of remoteDirs) {
-        const existingDir = manifest.subDirs.find(d => d && d.name === remoteDir.name)
-        if (!existingDir) {
-          manifest.subDirs.push({
-            name: remoteDir.name,
-            status: 'pending',
-            lastSync: null
-          })
-          newSubDirs.push(remoteDir)
-        }
-      }
-
-      const oldFiles = new Map(manifest.files.map(f => [f.name, f]))
-      
-      for (const remoteFile of remoteFiles) {
-        const oldFile = oldFiles.get(remoteFile.name)
-        if (!oldFile) {
-          manifest.files.push({
-            name: remoteFile.name,
-            size: remoteFile.size,
-            modTime: remoteFile.modTime,
-            status: 'pending',
-            attempts: 0,
-            isPriority: matchesPriorityPattern(remoteFile.name, priorityPatterns) // 標記優先級
-          })
-        } else if (oldFile.size !== remoteFile.size || oldFile.modTime !== remoteFile.modTime) {
-          oldFile.size = remoteFile.size
-          oldFile.modTime = remoteFile.modTime
-          oldFile.status = 'pending'
-          oldFile.attempts = 0
-          oldFile.isPriority = matchesPriorityPattern(remoteFile.name, priorityPatterns) // 更新優先級標記
-        }
-      }
-
-      manifest.stats.totalFiles = remoteFiles.length
-      manifest.stats.totalSize = remoteFiles.reduce((sum, f) => sum + f.size, 0)
-
-      if (mirrorMode) {
-        const removedDirs = manifest.subDirs.filter(subDir => 
-          !remoteDirs.some(d => d.name === subDir.name)
-        )
-        
-        manifest.subDirs = manifest.subDirs.filter(subDir => 
-          remoteDirs.some(d => d.name === subDir.name)
-        )
-
-        const removedFiles = manifest.files.filter(file => 
-          !remoteFiles.some(f => f.name === file.name)
-        )
-        
-        manifest.files = manifest.files.filter(file => 
-          remoteFiles.some(f => f.name === file.name)
-        )
-
-        const localItems = fs.readdirSync(dirPath)
-        for (const localItem of localItems) {
-          if (localItem === getManifestFileName(targetName)) continue
-          
-          const itemPath = path.join(dirPath, localItem)
-          const stat = fs.statSync(itemPath)
-
-          const foundInRemote = remoteFiles.some(f => f.name === localItem) || 
-                               remoteDirs.some(d => d.name === localItem)
-
-          if (!foundInRemote) {
-            if (stat.isDirectory()) {
-              try {
-                const subItems = fs.readdirSync(itemPath)
-                if (subItems.length === 0 || (subItems.length === 1 && subItems[0] === getManifestFileName(targetName))) {
-                  const deleteSubManifests = (subDir) => {
-                    const subManifestPath = getManifestPath(subDir, targetName)
-                    if (fs.existsSync(subManifestPath)) {
-                      fs.unlinkSync(subManifestPath)
-                    }
-                    try {
-                      const subItems = fs.readdirSync(subDir)
-                      for (const subItem of subItems) {
-                        const subItemPath = path.join(subDir, subItem)
-                        const subStat = fs.statSync(subItemPath)
-                        if (subStat.isDirectory()) {
-                          deleteSubManifests(subItemPath)
-                        }
-                      }
-                    } catch (e) {
-                      // ignore
-                    }
-                  }
-                  deleteSubManifests(itemPath)
-                  fs.rmdirSync(itemPath, { recursive: true })
-                  stats.deleted.push(`[${targetName}] ${localItem}/`)
-                }
-              } catch (e) {
-                // ignore
-              }
-            } else {
-              fs.unlinkSync(itemPath)
-              stats.deleted.push(`[${targetName}] ${localItem}`)
-              stats.totalBytes += stat.size
-            }
-          }
-        }
-
-        for (const removedDir of removedDirs) {
-          stats.deleted.push(`[${targetName}] ${removedDir.name}/ (removed from manifest)`)
-        }
-        for (const removedFile of removedFiles) {
-          stats.deleted.push(`[${targetName}] ${removedFile.name} (removed from manifest)`)
-        }
-      }
-
-      const pendingFiles = []
-      const skippedFiles = []
-      
-      for (const file of manifest.files) {
-        if (file.status === 'completed' && file.attempts < api.getConfig('maxRetries')) {
-          const localFilePath = path.join(dirPath, file.name)
-          if (!fs.existsSync(localFilePath)) {
-            file.status = 'pending'
-            pendingFiles.push(file)
-          }
-          continue
-        }
-        
-        if (file.status === 'completed' || file.attempts >= api.getConfig('maxRetries')) {
-          continue
-        }
-        
-        const localFilePath = path.join(dirPath, file.name)
-        if (shouldDownloadFile(localFilePath, file.size, overwrite)) {
-          pendingFiles.push(file)
-        } else {
-          file.status = 'completed'
-          file.attempts = 0
-          manifest.stats.syncedFiles++
-          manifest.stats.syncedSize += file.size
-          manifest.stats.skippedFiles++
-          skippedFiles.push(file.name)
-        }
-      }
-
-      if (skippedFiles.length > 0 && trace) {
-        api.log(`[trace] [${targetName}] Skipped ${skippedFiles.length} existing files in ${remotePath}`)
-      }
-
-      if (pendingFiles.length > 0) {
-        if (debug) {
-          const folderName = remotePath === '/' ? 'root' : path.basename(remotePath)
-          
-          // 統計優先級文件
-          const priorityCount = pendingFiles.filter(f => f.isPriority).length
-          if (priorityCount > 0) {
-            api.log(`[sync] [${targetName}] ${folderName}: ${pendingFiles.length} files to download (${priorityCount} priority)`)
-          } else {
-            api.log(`[sync] [${targetName}] ${folderName}: ${pendingFiles.length} files to download`)
-          }
-        }
-
-        // 按優先級排序：優先文件先下載
-        pendingFiles.sort((a, b) => {
-          if (a.isPriority && !b.isPriority) return -1
-          if (!a.isPriority && b.isPriority) return 1
-          return 0
-        })
-
-        // 使用並行下載
-        const downloadFileFn = async (file) => {
-          const baseUrl = target.remoteAddress.endsWith('/') ? target.remoteAddress : target.remoteAddress + '/'
-          const remoteFileUrl = baseUrl + path.join(remotePath, file.name).replace(/\\/g, '/')
-          await downloadWithAria2(remoteFileUrl, path.join(dirPath, file.name), targetName, api, target.username, target.password)
-        }
-
-        await downloadFilesInParallel(
-          pendingFiles,
-          downloadFileFn,
-          concurrentDownloads,
-          checkShouldStop,
-          target,
-          manifest,
-          dirPath,
-          remotePath,
-          stats,
-          targetRoot
-        )
-
-        // 檢查是否因窗口結束而停止
-        if (checkShouldStop()) {
-          if (debug) {
-            api.log(`[sync] [${targetName}] Stopping download in ${remotePath} due to window end`)
-          }
-          return { subDirs: newSubDirs, shouldContinue: false, stopped: true }
-        }
-      }
-
-      const folderStats = getFolderStats(dirPath, targetName)
-      manifest.folderMtime = folderStats.mtime
-      manifest.folderSize = folderStats.totalSize
-      manifest.lastSuccessfulSync = new Date().toISOString()
-      manifest.scanComplete = true
-      saveDirectoryManifest(dirPath, targetName, manifest)
-
-// ✅ 修复后的代码
-return { 
-    subDirs: manifest.subDirs.map(d => {
-        const cleanRemotePath = remotePath === '/' ? '' : remotePath
-        const subRemotePath = cleanRemotePath ? `${cleanRemotePath}/${d.name}` : d.name
-        return {
-            name: d.name,
-            remotePath: subRemotePath,  // ✅ 修复：正确构建路径
-            localPath: path.join(dirPath, d.name)
-        }
-    }), 
-    shouldContinue: true 
-}
-
-    } catch (error) {
-      api.log(`[error] [${targetName}] Failed to process directory ${remotePath}: ${error.message}`)
-      return { subDirs: [], shouldContinue: true, error: error.message }
-    }
-  }
-
-// ==================== 处理目标 ====================
-
-const processTarget = async (target, targetRoot, shouldStopFn) => {
-    const debug = api.getConfig('debug')
-    const checkpointInterval = api.getConfig('checkpointInterval') * 1000
-    const quickScanThreshold = api.getConfig('quickScanThreshold')
-    const targetName = target.name
-    
-    // 新增：检查是否应该停止的辅助函数
-    const checkShouldStop = () => {
-      if (shouldStopFn && shouldStopFn()) {
-        return true
-      }
-      // 检查定时窗口
-      const enableScheduledSync = api.getConfig('enableScheduledSync')
-      if (enableScheduledSync && !isWithinScheduledWindow()) {
-        return true
-      }
-      return false
-    }
-    
-    if (debug) {
-      api.log(`[sync] Starting processing for target: ${targetName}`)
-    }
-
-    if (!fs.existsSync(targetRoot)) {
-      fs.mkdirSync(targetRoot, { recursive: true })
-    }
-
-    getOrCreateDirectoryManifest(targetRoot, targetName, '/')
-
-    let syncState = loadSyncState(targetRoot, targetName)
-    let processQueue = []
-    let processedDirs = new Set(syncState.processedDirs || [])
-    let inProgressDirs = new Set(syncState.inProgressDirs || [])
-    let pendingDirs = new Set(syncState.pendingDirs || [])
-    let completedDirs = new Set(syncState.completedDirs || [])
-
-    if (syncState.currentQueue && syncState.currentQueue.length > 0) {
-      // 从检查点恢复时，需要更详细地重建队列
-      processQueue = syncState.currentQueue.map(dirPath => {
-        const fullPath = path.join(targetRoot, dirPath)
-        const remotePath = '/' + dirPath.replace(/\\/g, '/')
-        
-        // 尝试从 manifest 获取子目录信息
-        const dirManifest = loadDirectoryManifest(fullPath, targetName)
-        
-        return {
-          localPath: fullPath,
-          remotePath: remotePath,
-          name: path.basename(dirPath),
-          retryCount: 0,
-          // 如果 manifest 有子目录但还没处理，标记为需要展开
-          subDirs: dirManifest ? dirManifest.subDirs.filter(d => d.status === 'pending') : []
-        }
-      })
-      
-      if (debug) {
-        api.log(`[sync] [${targetName}] Resuming from checkpoint: ${processQueue.length} directories in queue`)
-        api.log(`[sync] [${targetName}] Progress: ${completedDirs.size} completed, ${pendingDirs.size} pending, ${processQueue.length} in queue`)
-      }
-    } else {
-      // 在扫描根目录前检查是否应该停止
-      if (checkShouldStop()) {
-        if (debug) api.log(`[sync] [${targetName}] Stopping before initial scan`)
-        return { downloaded: [], deleted: [], errors: [], totalBytes: 0, stopped: true }
-      }
-      
-      const rootManifest = loadDirectoryManifest(targetRoot, targetName)
-      const scanType = checkFolderNeedDeepScan(targetRoot, targetName, rootManifest, quickScanThreshold)
-      
-      if (debug && scanType === 'quick') {
-        api.log(`[sync] [${targetName}] Quick scan for root directory`)
-      }
-
-      const rootResult = await processDirectory(
-        target, 
-        targetRoot, 
-        '/', 
-        { downloaded: [], deleted: [], errors: [], totalBytes: 0 },
-        null,
-        scanType,
-        shouldStopFn
-      )
-
-      // 重要：从 manifest 获取所有待处理的子目录（包括深层目录）
-      processQueue = rootResult.subDirs.map(dir => ({
-        localPath: dir.localPath,
-        remotePath: dir.remotePath,
-        name: dir.name,
-        retryCount: 0,
-        subDirs: []
-      }))
-
-      // 计算总目录数 - 需要递归计算所有子目录
-      const countAllDirs = (dirs) => {
-        let count = dirs.length
-        // 这里我们无法提前知道所有子目录，先设置一个初始值
-        return count
-      }
-      
-      syncState.totalDirs = countAllDirs(processQueue)
-      syncState.pendingDirs = processQueue.map(d => path.relative(targetRoot, d.localPath).replace(/\\/g, '/'))
-    }
-
-    const stats = {
-      downloaded: [],
-      deleted: [],
-      errors: [],
-      totalBytes: 0
-    }
-
-    let lastCheckpoint = Date.now()
-    let shouldContinue = true
-    let consecutiveErrors = 0
-    const maxConsecutiveErrors = 5
-    let hasError = false
-
-    // 跟踪总目录数和已完成数
-    let totalDirsDiscovered = syncState.totalDirs || 0
-    let totalDirsCompleted = completedDirs.size
-
-    while (processQueue.length > 0 && shouldContinue) {
-      // 在每个循环开始时检查是否应该停止
-      if (checkShouldStop()) {
-        if (debug) {
-          api.log(`[sync] [${targetName}] Stopping sync for target (window ended)`)
-        }
-        shouldContinue = false
-        break
-      }
-      
-      // 按目录深度排序，先处理较浅的目录
-      processQueue.sort((a, b) => {
-        const depthA = a.remotePath.split('/').filter(p => p).length
-        const depthB = b.remotePath.split('/').filter(p => p).length
-        return depthA - depthB
-      })
-
-      const dir = processQueue.shift()
-      
-      // 安全检查：如果 remotePath 未定义则跳过
-      if (!dir || !dir.remotePath) {
-        if (debug) {
-          api.log(`[sync] [${targetName}] Skipping invalid directory entry`)
-        }
-        continue
-      }
-      
-      const dirRelPath = path.relative(targetRoot, dir.localPath).replace(/\\/g, '/')
-
-      if (processedDirs.has(dirRelPath) || inProgressDirs.has(dirRelPath) || completedDirs.has(dirRelPath)) {
-        continue
-      }
-
-      inProgressDirs.add(dirRelPath)
-      pendingDirs.delete(dirRelPath)
-
-      if (debug) {
-        api.log(`[sync] [${targetName}] Processing: ${dirRelPath} (${processQueue.length} in queue, ${totalDirsCompleted} completed)`)
-      }
-
-      const dirManifest = loadDirectoryManifest(dir.localPath, targetName)
-      const scanType = checkFolderNeedDeepScan(dir.localPath, targetName, dirManifest, quickScanThreshold)
-
-      const result = await processDirectory(
-        target,
-        dir.localPath,
-        dir.remotePath,
-        stats,
-        { shouldStop: false },
-        scanType,
-        shouldStopFn
-      )
-
-      if (result.error) {
-        hasError = true
-        consecutiveErrors++
-        if (consecutiveErrors >= maxConsecutiveErrors) {
-          if (debug) {
-            api.log(`[sync] [${targetName}] Too many consecutive errors, pausing sync`)
-          }
-          shouldContinue = false
-          processQueue.unshift(dir)
-          break
-        }
-      } else {
-        consecutiveErrors = 0
-      }
-
-      if (!result.shouldContinue || result.stopped) {
-        shouldContinue = false
-        processQueue.unshift(dir)
-        break
-      }
-
-      // 添加子目录到队列
-      let newDirsAdded = 0
-      for (const subDir of (result.subDirs || [])) {
-        // 安全检查：确保所有必要字段存在
-        if (!subDir || !subDir.name || !subDir.localPath || !subDir.remotePath) {
-          continue
-        }
-        
-        const subDirRelPath = path.relative(targetRoot, subDir.localPath).replace(/\\/g, '/')
-        if (!processedDirs.has(subDirRelPath) && 
-            !inProgressDirs.has(subDirRelPath) && 
-            !completedDirs.has(subDirRelPath) &&
-            !processQueue.some(q => q.localPath === subDir.localPath)) {
-          processQueue.push({
-            localPath: subDir.localPath,
-            remotePath: subDir.remotePath,
-            name: subDir.name,
-            retryCount: 0
-          })
-          pendingDirs.add(subDirRelPath)
-          newDirsAdded++
-        }
-      }
-
-      // 更新总目录数
-      if (newDirsAdded > 0) {
-        totalDirsDiscovered += newDirsAdded
-      }
-
-      inProgressDirs.delete(dirRelPath)
-      processedDirs.add(dirRelPath)
-      
-      // 检查目录是否完全同步完成
-      const updatedManifest = loadDirectoryManifest(dir.localPath, targetName)
-      if (updatedManifest && updatedManifest.scanComplete && 
-          updatedManifest.stats.syncedFiles === updatedManifest.stats.totalFiles) {
-        completedDirs.add(dirRelPath)
-        totalDirsCompleted = completedDirs.size
-      }
-
-      const now = Date.now()
-      if (now - lastCheckpoint >= checkpointInterval) {
-        // 保存检查点时包含所有队列信息
-        syncState = {
-          currentQueue: processQueue
-            .filter(d => d && d.localPath)
-            .map(d => path.relative(targetRoot, d.localPath).replace(/\\/g, '/')),
-          processedDirs: Array.from(processedDirs),
-          inProgressDirs: Array.from(inProgressDirs),
-          pendingDirs: Array.from(pendingDirs),
-          completedDirs: Array.from(completedDirs),
-          totalDirs: totalDirsDiscovered,
-          completedCount: totalDirsCompleted,
-          lastCheckpoint: new Date().toISOString()
-        }
-        saveSyncState(targetRoot, targetName, syncState)
-        lastCheckpoint = now
-        
-        if (debug) {
-          api.log(`[sync] [${targetName}] Checkpoint: ${totalDirsCompleted}/${totalDirsDiscovered} dirs completed, ${processQueue.length} in queue`)
-        }
-      }
-    }
-
-    // 更新根 manifest
-    const rootManifest = loadDirectoryManifest(targetRoot, targetName)
-    if (rootManifest) {
-      rootManifest.stats = {
-        totalDirs: totalDirsCompleted,
-        totalFiles: stats.downloaded.length + stats.errors.length,
-        totalSize: stats.totalBytes,
-        syncedDirs: totalDirsCompleted,
-        syncedFiles: stats.downloaded.length,
-        syncedSize: stats.totalBytes,
-        skippedFiles: rootManifest.stats.skippedFiles || 0
-      }
-      rootManifest.lastSuccessfulSync = new Date().toISOString()
-      saveDirectoryManifest(targetRoot, targetName, rootManifest)
-    }
-
-    // 判断是否真正完成：队列为空、没有错误、且所有发现的目录都已完成
-    const allCompleted = shouldContinue && 
-                        !hasError &&
-                        processQueue.length === 0 && 
-                        totalDirsCompleted >= totalDirsDiscovered
-
-    if (allCompleted) {
-      clearSyncState(targetRoot, targetName)
-      
-      const globalState = loadGlobalState(targetRoot)
-      if (!globalState.completedTargets) globalState.completedTargets = {}
-      globalState.completedTargets[targetName] = new Date().toISOString()
-      saveGlobalState(targetRoot, globalState)
-      
-      if (debug) {
-        api.log(`[sync] [${targetName}] Target fully completed: ${totalDirsCompleted} directories`)
-      }
-    } else {
-      // 保存最终状态
-      syncState = {
-        currentQueue: processQueue
-          .filter(d => d && d.localPath)
-          .map(d => path.relative(targetRoot, d.localPath).replace(/\\/g, '/')),
-        processedDirs: Array.from(processedDirs),
-        inProgressDirs: Array.from(inProgressDirs),
-        pendingDirs: Array.from(pendingDirs),
-        completedDirs: Array.from(completedDirs),
-        totalDirs: totalDirsDiscovered,
-        completedCount: totalDirsCompleted,
-        lastCheckpoint: new Date().toISOString()
-      }
-      saveSyncState(targetRoot, targetName, syncState)
-      
-      if (debug) {
-        api.log(`[sync] [${targetName}] Sync not completed. ${totalDirsCompleted}/${totalDirsDiscovered} dirs done, ${processQueue.length} remaining in queue`)
-        if (processQueue.length > 0) {
-          api.log(`[sync] [${targetName}] Next dirs in queue: ${processQueue.slice(0, 3).map(d => d.remotePath).join(', ')}`)
-        }
-      }
-    }
-
-    if (debug && (stats.downloaded.length > 0 || stats.deleted.length > 0 || stats.errors.length > 0)) {
-      api.log(`[sync] [${targetName}] Summary:`)
-      if (stats.downloaded.length > 0) api.log(`[sync]   Downloaded: ${stats.downloaded.length} files (${formatBytes(stats.totalBytes)})`)
-      if (stats.deleted.length > 0) api.log(`[sync]   Deleted: ${stats.deleted.length} items`)
-      if (stats.errors.length > 0) api.log(`[sync]   Errors: ${stats.errors.length}`)
-    }
-
-    return stats
-  }
-
-  // ==================== 新增：定时窗口检查函数（优化日志频率） ====================
-
-  /**
-   * 检查并更新同步状态（基于定时窗口）- 优化日志输出
-   */
   const checkScheduledWindow = () => {
-    const enableScheduledSync = api.getConfig('enableScheduledSync')
-    const debug = api.getConfig('debug')
-    
-    // 如果定时同步未启用，直接返回
-    if (!enableScheduledSync) {
-      if (isInScheduledWindow) {
-        isInScheduledWindow = false
-        if (debug) {
-          api.log('[sync] Scheduled sync disabled')
-        }
-      }
-      return
-    }
-
+    if (!api.getConfig('enableScheduledSync')) { isInScheduledWindow = false; return }
     const nowInWindow = isWithinScheduledWindow()
     const now = Date.now()
-    
-    // 状态变化时记录日志
     if (nowInWindow !== isInScheduledWindow) {
       isInScheduledWindow = nowInWindow
       lastWindowLogTime = now
-      const startTime = api.getConfig('syncStartTime') || '00:30'
-      const endTime = api.getConfig('syncEndTime') || '08:30'
-      
-      if (isInScheduledWindow) {
-        api.log(`[sync] Entered scheduled window (${startTime} - ${endTime})`)
-      } else {
-        api.log(`[sync] Exited scheduled window (${startTime} - ${endTime})`)
-      }
-    } 
-    // 状态未变化但定时启用且不在窗口内，限制日志频率
-    else if (!nowInWindow && debug && (now - lastWindowLogTime) >= WINDOW_LOG_INTERVAL) {
-      // 每隔60分钟输出一次提醒
-      const startTime = api.getConfig('syncStartTime') || '00:30'
-      const endTime = api.getConfig('syncEndTime') || '08:30'
-      const nextWindow = getNextScheduledWindowStart()
-      const timeUntil = Math.round((nextWindow - now) / (60 * 1000))
-      
-      api.log(`[sync] Scheduled on (${startTime} - ${endTime}), next in ~${timeUntil} minutes`)
+    } else if (!nowInWindow && (now - lastWindowLogTime) >= WINDOW_LOG_INTERVAL) {
       lastWindowLogTime = now
     }
   }
 
-  // ==================== 主同步循環 ====================
+  const saveCheckpoint = () => {
+    if (!isSyncing) return
+    const syncTargets = api.getConfig('syncTargets') || []
+    for (const target of syncTargets) {
+      if (target.enabled !== false && target.localDestination) {
+        const globalState = loadGlobalSyncState(target.localDestination)
+        if (globalState?.state === 'syncing') saveGlobalSyncState(target.localDestination, globalState)
+      }
+    }
+  }
+
+  const runSlimeMoldChecks = async () => {
+    if (!api.getConfig('enableSync') || isSyncing) return
+    const syncTargets = api.getConfig('syncTargets') || []
+    for (const target of syncTargets) {
+      if (target.enabled === false || !target.enableSlimeMold || !target.localDestination) continue
+      try { await checkSlimeMoldScans(target, target.localDestination) } catch (e) {}
+    }
+  }
 
   const runSync = async () => {
-    // 总开关检查
-    if (!api.getConfig('enableSync')) {
-      return
-    }
-
-    // 關鍵修改：在開始同步前檢查是否在窗口內
-    const enableScheduledSync = api.getConfig('enableScheduledSync')
-    if (enableScheduledSync && !isWithinScheduledWindow()) {
-      const debug = api.getConfig('debug')
-      if (debug) {
-        api.log('[sync] Skipping sync: outside scheduled window')
-      }
-      return
-    }
-
-    if (isSyncing) {
-      return
-    }
+    if (!api.getConfig('enableSync')) return
+    if (api.getConfig('enableScheduledSync') && !isWithinScheduledWindow()) return
+    if (isSyncing) return
     
-    // 重置停止標誌
     shouldStopSync = false
-    
     isSyncing = true
     syncStartTime = Date.now()
     
     try {
-      const debug = api.getConfig('debug')
       const syncTargets = api.getConfig('syncTargets') || []
-
-      if (!syncTargets.length) {
-        if (debug) api.log('[sync] No sync targets configured')
-        return
-      }
-
-      // 過濾出已啟用的目標，並按優先級排序
-      const enabledTargets = syncTargets.filter(target => target.enabled !== false) // 預設為 true
-      const sortedTargets = [...enabledTargets].sort((a, b) => {
-        const priorityA = a.priority !== undefined ? a.priority : 1
-        const priorityB = b.priority !== undefined ? b.priority : 1
-        return priorityA - priorityB
-      })
-
-      if (debug) {
-        const disabledCount = syncTargets.length - enabledTargets.length
-        api.log(`[sync] Starting sync with ${enabledTargets.length} enabled targets (${disabledCount} disabled) in priority order`)
-      }
-
-      for (const target of sortedTargets) {
-        // 在處理每個目標前檢查是否應該停止
-        if (shouldStopSync) {
-          if (debug) {
-            api.log(`[sync] Stopping sync for target "${target.name}" due to window end`)
-          }
-          break
+      const enabledTargets = syncTargets.filter(t => t.enabled !== false)
+      logDebug(`[sync] Cycle start - ${enabledTargets.length} targets`)
+      
+      for (const target of enabledTargets) {
+        if (shouldStopSync || (api.getConfig('enableScheduledSync') && !isWithinScheduledWindow())) break
+        if (!target.localDestination) continue
+        
+        const targetRoot = target.localDestination
+        const globalState = loadGlobalSyncState(targetRoot)
+        const hasIncompleteSync = globalState?.state === 'paused'
+        
+        if (!hasIncompleteSync && !shouldScanTarget(target)) continue
+        if (!fs.existsSync(targetRoot)) fs.mkdirSync(targetRoot, { recursive: true })
+        
+        const apiUrl = new URL(target.remoteAddress)
+        if (!await checkServerAvailable(apiUrl, target.username, target.password)) {
+          logDebug(`[sync] [${target.name}] Server unavailable`)
+          continue
         }
         
-        // 檢查是否仍在窗口內（定時同步啟用時）
-        if (enableScheduledSync && !isWithinScheduledWindow()) {
-          if (debug) {
-            api.log(`[sync] Stopping sync: outside scheduled window after processing ${target.name}`)
-          }
-          break
-        }
-        
-        try {
-          if (!target.localDestination) {
-            api.log(`[sync] Target "${target.name}" has no local destination, skipping`)
-            continue
-          }
-
-          const targetRoot = target.localDestination
-          
-          // 檢查完成狀態
-          const globalState = loadGlobalState(targetRoot)
-          const isCompleted = globalState.completedTargets && globalState.completedTargets[target.name]
-          
-          if (isCompleted) {
-            if (debug) {
-              api.log(`[sync] Target "${target.name}" was completed at ${globalState.completedTargets[target.name]}, performing quick integrity check`)
-            }
-            
-            // 執行快速完整性檢查
-            const needsSync = await performQuickIntegrityCheck(target, targetRoot)
-            
-            if (!needsSync) {
-              if (debug) {
-                api.log(`[sync] Target "${target.name}" integrity check passed, skipping full sync`)
-              }
-              continue
-            }
-            
-            if (debug) {
-              api.log(`[sync] Target "${target.name}" needs re-sync due to integrity check failure`)
-            }
-          }
-
-          // 確保目錄存在
-          if (!fs.existsSync(targetRoot)) {
-            fs.mkdirSync(targetRoot, { recursive: true })
-          }
-
-          const apiUrl = new URL(target.remoteAddress)
-          const serverAvailable = await checkServerAvailable(apiUrl, target.username, target.password)
-          
-          if (!serverAvailable) {
-            api.log(`[sync] Server unavailable for target "${target.name}" - will retry later`)
-            continue
-          }
-
-          await retryFailedFiles(targetRoot, target)
-
-          if (debug) {
-            const syncState = loadSyncState(targetRoot, target.name)
-            if (syncState.completedCount > 0) {
-              api.log(`[sync] Processing target: ${target.name} -> ${targetRoot} (${syncState.completedCount} dirs completed)`)
-            } else {
-              api.log(`[sync] Processing target: ${target.name} -> ${targetRoot}`)
-            }
-          }
-
-          // 傳入停止檢查函數
-          await processTarget(target, targetRoot, () => shouldStopSync || (enableScheduledSync && !isWithinScheduledWindow()))
-
-        } catch (error) {
-          api.log(`[error] Failed to process target "${target.name}": ${error.message}`)
-        }
+        await processTarget(target, targetRoot, () => shouldStopSync || (api.getConfig('enableScheduledSync') && !isWithinScheduledWindow()))
       }
-
-      const elapsedTime = (Date.now() - syncStartTime) / 1000
-
-      if (debug) {
-        if (shouldStopSync) {
-          api.log(`[sync] Sync stopped early due to window end after ${elapsedTime.toFixed(2)} seconds`)
-        } else {
-          api.log(`[sync] All targets sync completed in ${elapsedTime.toFixed(2)} seconds`)
-        }
-      }
-
-      lastSyncTime = Date.now()
-
+      
+      logDebug(`[sync] Cycle completed in ${((Date.now() - syncStartTime) / 1000).toFixed(1)}s`)
     } catch (err) {
-      api.log(`[error] Sync failed: ${err.message}`)
+      logError(`Sync failed: ${err.message}`)
     } finally {
       isSyncing = false
       shouldStopSync = false
+      if (global.gc) global.gc()
     }
   }
 
   const checkSync = async () => {
-    if (!api.getConfig('enableSync')) {
-      return
-    }
-
-    // 更新定时窗口状态（会控制日志频率）
+    if (!api.getConfig('enableSync')) return
     checkScheduledWindow()
-
-    const enableScheduledSync = api.getConfig('enableScheduledSync')
-    const interval = api.getConfig('syncInterval')
-    
-    if (interval !== currentInterval) {
-      currentInterval = interval
-    }
-    
-    if (currentInterval <= 0) return
-
-    const now = Date.now()
-    const intervalMs = currentInterval * 24 * 60 * 60 * 1000
-    
-    // 检查是否到了同步时间间隔
-    const timeToSync = lastSyncTime === 0 || (now - lastSyncTime) >= intervalMs
-    
-    if (!timeToSync) {
-      return
-    }
-
-    // 關鍵修改：只有在窗口內時才執行同步
-    if (enableScheduledSync) {
-      if (isWithinScheduledWindow()) {
-        await runSync()
-      } else {
-        // 不在窗口內，設置停止標誌（如果正在同步）
-        if (isSyncing) {
-          shouldStopSync = true
-          if (api.getConfig('debug')) {
-            api.log('[sync] Setting stop flag for ongoing sync (outside window)')
-          }
-        }
-        
-        const debug = api.getConfig('debug')
-        if (debug && (now - lastWindowLogTime) >= WINDOW_LOG_INTERVAL) {
-          const nextWindow = getNextScheduledWindowStart()
-          const waitMinutes = Math.round((nextWindow - now) / (60 * 1000))
-          api.log(`[sync] Waiting for next scheduled window (in ~${waitMinutes} minutes)`)
-          lastWindowLogTime = now
-        }
-      }
+    if (api.getConfig('enableScheduledSync')) {
+      if (isWithinScheduledWindow()) await runSync()
+      else if (isSyncing) shouldStopSync = true
     } else {
-      // 定時同步未啟用，正常執行
       await runSync()
     }
   }
-  
-  const checkIncompleteSyncs = async () => {
-    const debug = api.getConfig('debug')
-    const syncTargets = api.getConfig('syncTargets') || []
 
-    for (const target of syncTargets) {
-      if (!target.localDestination) continue
+  initTargetScanTimes()
 
-      const targetRoot = target.localDestination
-      const syncState = loadSyncState(targetRoot, target.name)
-      
-      if (syncState.currentQueue && syncState.currentQueue.length > 0) {
-        api.log(`[sync] Found incomplete sync for "${target.name}": ${syncState.completedCount}/${syncState.totalDirs} dirs completed`)
-      }
-    }
-  }
-
-  // 主定时器（每分钟检查一次）
-  syncTimer = api.setInterval(() => {
-    checkSync().catch(err => {
-      api.log(`[error] Sync check failed: ${err.message}`)
-    })
-  }, 60 * 1000)
-
-  // 新增：定时窗口检查定时器（每30秒检查一次，并限制日志频率）
-  scheduledSyncTimer = api.setInterval(() => {
-    if (api.getConfig('enableScheduledSync')) {
-      checkScheduledWindow()
-    }
-  }, 30 * 1000)
-
-  // 新增：窗口检查定时器，用于在窗口结束时中断正在进行的同步
+  syncTimer = api.setInterval(() => checkSync().catch(() => {}), 5 * 60 * 1000)
+  scheduledSyncTimer = api.setInterval(() => { if (api.getConfig('enableScheduledSync')) checkScheduledWindow() }, 60 * 1000)
   windowCheckTimer = api.setInterval(() => {
-    const enableScheduledSync = api.getConfig('enableScheduledSync')
-    if (enableScheduledSync && isSyncing && !isWithinScheduledWindow()) {
-      // 如果正在同步且已離開窗口，設置停止標誌
-      shouldStopSync = true
-      if (api.getConfig('debug')) {
-        api.log('[sync] Window ended, signaling sync to stop')
-      }
-    }
-  }, 10 * 1000) // 每10秒檢查一次
+    if (api.getConfig('enableScheduledSync') && isSyncing && !isWithinScheduledWindow()) shouldStopSync = true
+  }, 30 * 1000)
+  checkpointTimer = api.setInterval(saveCheckpoint, DEFAULT_CHECKPOINT_INTERVAL * 1000)
+  slimeMoldCheckTimer = api.setInterval(() => runSlimeMoldChecks().catch(() => {}), SLIME_MOLD_CHECK_INTERVAL)
 
   if (api.getConfig('enableSync')) {
-    checkIncompleteSyncs().catch(err => {
-      api.log(`[error] Failed to check incomplete syncs: ${err.message}`)
-    })
-    
-    // 延迟3秒后执行初始同步
-    setTimeout(() => {
-      runSync().catch(err => {
-        api.log(`[error] Initial sync failed: ${err.message}`)
-      })
-    }, 3000)
+    setTimeout(() => runSync().catch(() => {}), 3000)
   }
 
   return {
     unload() {
-      if (syncTimer) {
-        clearInterval(syncTimer)
-        syncTimer = null
-      }
-      if (scheduledSyncTimer) {
-        clearInterval(scheduledSyncTimer)
-        scheduledSyncTimer = null
-      }
-      if (windowCheckTimer) {
-        clearInterval(windowCheckTimer)
-        windowCheckTimer = null
-      }
+      saveCheckpoint()
+      if (syncTimer) { clearInterval(syncTimer); syncTimer = null }
+      if (scheduledSyncTimer) { clearInterval(scheduledSyncTimer); scheduledSyncTimer = null }
+      if (windowCheckTimer) { clearInterval(windowCheckTimer); windowCheckTimer = null }
+      if (checkpointTimer) { clearInterval(checkpointTimer); checkpointTimer = null }
+      if (slimeMoldCheckTimer) { clearInterval(slimeMoldCheckTimer); slimeMoldCheckTimer = null }
     },
-    
+
     customRest: {
       async manualSync() {
-        if (!api.getConfig('enableSync')) {
-          return { error: 'Sync is disabled. Please enable it in settings first.' }
-        }
+        if (!api.getConfig('enableSync')) return { error: 'Sync is disabled' }
         await runSync()
         return { message: 'Manual sync triggered' }
       },
 
-async getSyncStatus() {
-    const syncTargets = api.getConfig('syncTargets') || []
-    const interval = api.getConfig('syncInterval')
-    const mirrorMode = api.getConfig('mirrorMode')
-    const enableSync = api.getConfig('enableSync')
-    const enableScheduledSync = api.getConfig('enableScheduledSync')
-    const syncStartTime = api.getConfig('syncStartTime') || '00:30'
-    const syncEndTime = api.getConfig('syncEndTime') || '08:30'
-    const concurrentDownloads = api.getConfig('concurrentDownloads') || 3
-    const quickScanThreshold = api.getConfig('quickScanThreshold')
-
-    // 计算下次同步时间（天数转为毫秒）
-    const intervalMs = interval * 24 * 60 * 60 * 1000
-    const nextSync = lastSyncTime > 0 && interval > 0 && enableSync
-        ? new Date(lastSyncTime + intervalMs).toISOString()
-        : 'Not scheduled'
-
-    // 计算下次窗口开始时间
-    let nextWindowStart = null
-    if (enableScheduledSync) {
-        const nextStart = getNextScheduledWindowStart()
-        nextWindowStart = nextStart.toISOString()
-    }
-
-    const targetsStatus = []
-    for (const target of syncTargets) {
-        if (!target.localDestination) continue
-        
-        const rootManifest = loadDirectoryManifest(target.localDestination, target.name)
-        const syncState = loadSyncState(target.localDestination, target.name)
-        const globalState = loadGlobalState(target.localDestination)
-        
-        const isCompleted = globalState.completedTargets && globalState.completedTargets[target.name]
-        
-        if (rootManifest) {
-            targetsStatus.push({
-                name: target.name,
-                enabled: target.enabled !== false,
-                destination: target.localDestination,
-                priority: target.priority !== undefined ? target.priority : 1,
-                priorityPatterns: target.priorityPatterns || '*.htm,*.html,*.js,*.css,*.ttf,*.woff',
-                username: target.username ? '******' : null,
-                hasAuth: !!(target.username && target.password),
-                targetExcludeFiles: target.targetExcludeFiles || '',
-                targetExcludeFolders: target.targetExcludeFolders || '',
-                totalDirs: syncState.totalDirs || rootManifest.stats.totalDirs || 0,
-                totalFiles: rootManifest.stats.totalFiles || 0,
-                totalSize: rootManifest.stats.totalSize || 0,
-                syncedDirs: syncState.completedCount || rootManifest.stats.syncedDirs || 0,
-                syncedFiles: rootManifest.stats.syncedFiles || 0,
-                syncedSize: rootManifest.stats.syncedSize || 0,
-                skippedFiles: rootManifest.stats.skippedFiles || 0,
-                lastSync: rootManifest.lastSuccessfulSync,
-                pendingDirs: syncState.currentQueue ? syncState.currentQueue.length : 0,
-                hasPendingWork: syncState.currentQueue && syncState.currentQueue.length > 0,
-                isCompleted: !!isCompleted
-            })
-        } else {
-            targetsStatus.push({
-                name: target.name,
-                enabled: target.enabled !== false,
-                destination: target.localDestination,
-                priority: target.priority !== undefined ? target.priority : 1,
-                priorityPatterns: target.priorityPatterns || '*.htm,*.html,*.js,*.css,*.ttf,*.woff',
-                username: target.username ? '******' : null,
-                hasAuth: !!(target.username && target.password),
-                targetExcludeFiles: target.targetExcludeFiles || '',
-                targetExcludeFolders: target.targetExcludeFolders || '',
-                status: 'not_scanned'
-            })
+      async getSyncStatus() {
+        const syncTargets = api.getConfig('syncTargets') || []
+        return {
+          version: MANIFEST_VERSION,
+          enableSync: api.getConfig('enableSync'),
+          enableScheduledSync: api.getConfig('enableScheduledSync'),
+          isInScheduledWindow,
+          isSyncing,
+          targets: syncTargets.map(target => {
+            const globalState = target.localDestination ? loadGlobalSyncState(target.localDestination) : null
+            const lastScan = targetLastScanTime[target.name] || 0
+            const intervalDays = target.syncInterval !== undefined ? target.syncInterval : 3
+            return {
+              name: target.name,
+              enabled: target.enabled !== false,
+              destination: target.localDestination,
+              syncIntervalDays: intervalDays,
+              lastScan: lastScan > 0 ? new Date(lastScan).toISOString() : 'Never',
+              state: globalState?.state || 'idle',
+              slimeMoldEnabled: target.enableSlimeMold || false,
+              progress: globalState ? {
+                processedDirs: globalState.processedDirs,
+                totalDirs: globalState.totalDirs,
+                downloadedFiles: globalState.downloadedFiles,
+                totalFiles: globalState.totalFiles
+              } : null
+            }
+          })
         }
-    }
-    
-    return {
-        enableSync: enableSync,
-        enableScheduledSync: enableScheduledSync,
-        syncStartTime: syncStartTime,
-        syncEndTime: syncEndTime,
-        isInScheduledWindow: isInScheduledWindow,
-        nextWindowStart: nextWindowStart,
-        lastSyncTime: lastSyncTime > 0 ? new Date(lastSyncTime).toISOString() : 'Never',
-        nextSyncTime: nextSync,
-        syncIntervalDays: interval,
-        syncIntervalMs: intervalMs,
-        quickScanThresholdMinutes: quickScanThreshold,
-        enabled: interval > 0 && enableSync,
-        mirrorMode: mirrorMode,
-        concurrentDownloads: concurrentDownloads,
-        targets: targetsStatus,
-        isSyncing: isSyncing,
-        syncDuration: isSyncing ? ((Date.now() - syncStartTime) / 1000).toFixed(1) + 's' : null
-    }
-},
+      },
 
       async getFailedFiles({ targetName }) {
-        const syncTargets = api.getConfig('syncTargets') || []
-        const target = syncTargets.find(t => t.name === targetName)
-        
-        if (!target) {
-          return { error: 'Target not found' }
-        }
-        
-        if (!target.localDestination || !fs.existsSync(target.localDestination)) {
-          return { error: 'Target destination not found' }
-        }
-        
-        const failedQueue = loadFailedQueue(target.localDestination, targetName)
-        return {
-          target: targetName,
-          files: failedQueue.files,
-          total: failedQueue.files.length
-        }
+        const target = (api.getConfig('syncTargets') || []).find(t => t.name === targetName)
+        if (!target?.localDestination || !fs.existsSync(target.localDestination)) return { error: 'Target not found' }
+        return { target: targetName, ...loadFailedQueue(target.localDestination, targetName) }
       },
 
-      async getSyncState({ targetName }) {
-        const syncTargets = api.getConfig('syncTargets') || []
-        const target = syncTargets.find(t => t.name === targetName)
+      async getSlimeMoldData({ targetName }) {
+        const target = (api.getConfig('syncTargets') || []).find(t => t.name === targetName)
+        if (!target?.localDestination) return { error: 'Target not found' }
         
-        if (!target) {
-          return { error: 'Target not found' }
-        }
+        const network = loadSlimeNetwork(target.localDestination)
+        if (!network) return { error: 'No slime mold data found', enabled: false }
         
-        if (!target.localDestination || !fs.existsSync(target.localDestination)) {
-          return { error: 'Target destination not found' }
-        }
-        
-        const syncState = loadSyncState(target.localDestination, targetName)
-        const globalState = loadGlobalState(target.localDestination)
+        const decayRate = calculateDecayRate(network.syncIntervalDays || 3, SLIME_MOLD_CHECK_INTERVAL / (60 * 1000))
+        const now = Date.now()
         
         return {
           target: targetName,
-          state: syncState,
-          completed: globalState.completedTargets && globalState.completedTargets[targetName]
-        }
-      },
-
-      async clearSyncState({ targetName }) {
-        const syncTargets = api.getConfig('syncTargets') || []
-        const target = syncTargets.find(t => t.name === targetName)
-        
-        if (!target) {
-          return { error: 'Target not found' }
-        }
-        
-        if (!target.localDestination) {
-          return { error: 'Target destination not found' }
-        }
-        
-        clearSyncState(target.localDestination, targetName)
-        
-        const globalState = loadGlobalState(target.localDestination)
-        if (globalState.completedTargets) {
-          delete globalState.completedTargets[targetName]
-        }
-        saveGlobalState(target.localDestination, globalState)
-        
-        return { message: `Sync state cleared for ${targetName}` }
-      },
-
-      async resetTargetCompletion({ targetName }) {
-        const syncTargets = api.getConfig('syncTargets') || []
-        const target = syncTargets.find(t => t.name === targetName)
-        
-        if (!target) {
-          return { error: 'Target not found' }
-        }
-        
-        if (!target.localDestination) {
-          return { error: 'Target destination not found' }
-        }
-        
-        const globalState = loadGlobalState(target.localDestination)
-        if (globalState.completedTargets) {
-          delete globalState.completedTargets[targetName]
-        }
-        saveGlobalState(target.localDestination, globalState)
-        
-        return { message: `Target completion status reset for ${targetName}` }
-      },
-
-      async getDirectoryManifest({ targetName, dirPath = '' }) {
-        const syncTargets = api.getConfig('syncTargets') || []
-        const target = syncTargets.find(t => t.name === targetName)
-        
-        if (!target) {
-          return { error: 'Target not found' }
-        }
-        
-        if (!target.localDestination || !fs.existsSync(target.localDestination)) {
-          return { error: 'Target destination not found' }
-        }
-
-        const fullPath = path.join(target.localDestination, dirPath)
-        const manifest = loadDirectoryManifest(fullPath, targetName)
-        
-        if (!manifest) {
-          return { error: 'Manifest not found for this directory' }
-        }
-        
-        return {
-          path: dirPath || '/',
-          ...manifest
-        }
-      },
-
-      async quickScan({ targetName, dirPath = '' }) {
-        const syncTargets = api.getConfig('syncTargets') || []
-        const target = syncTargets.find(t => t.name === targetName)
-        
-        if (!target) {
-          return { error: 'Target not found' }
-        }
-        
-        if (!target.localDestination || !fs.existsSync(target.localDestination)) {
-          return { error: 'Target destination not found' }
-        }
-
-        const fullPath = path.join(target.localDestination, dirPath)
-        const manifest = loadDirectoryManifest(fullPath, targetName)
-        
-        if (!manifest) {
-          return { error: 'Manifest not found for this directory' }
-        }
-
-        const result = quickScanDirectory(fullPath, targetName, manifest)
-        
-        return {
-          target: targetName,
-          path: dirPath || '/',
-          missingFiles: result.missingFiles.length,
-          extraFiles: result.extraFiles.length,
-          details: result
-        }
-      },
-
-      async resetSync({ targetName }) {
-        const syncTargets = api.getConfig('syncTargets') || []
-        const target = syncTargets.find(t => t.name === targetName)
-        
-        if (!target) {
-          return { error: 'Target not found' }
-        }
-        
-        if (!target.localDestination || !fs.existsSync(target.localDestination)) {
-          return { error: 'Target destination not found' }
-        }
-        
-        const removeAllManifests = (dir) => {
-          if (!fs.existsSync(dir)) return
-          
-          const files = fs.readdirSync(dir)
-          for (const file of files) {
-            const filePath = path.join(dir, file)
-            const stat = fs.statSync(filePath)
-            
-            if (file.startsWith('sync.') && file.endsWith('.json')) {
-              fs.unlinkSync(filePath)
-            } else if (stat.isDirectory()) {
-              removeAllManifests(filePath)
+          enabled: true,
+          syncIntervalDays: network.syncIntervalDays || 3,
+          decayRate: parseFloat(decayRate.toFixed(6)),
+          extraScansThisCycle: network.extraScansThisCycle,
+          maxExtraScansPerCycle: MAX_EXTRA_SCANS_PER_CYCLE,
+          hotPaths: network.hotPaths.slice(0, 10).map(hotPath => {
+            const node = loadSlimeNode(path.join(target.localDestination, hotPath))
+            const currentHeat = node ? decayHeatByTime(node, network, now) : 0
+            return {
+              path: hotPath,
+              heat: parseFloat(currentHeat.toFixed(2)),
+              changeRate: node?.changeStats?.changeRate || 0,
+              lastChange: node?.changeStats?.lastChange || null
             }
-          }
+          })
         }
+      },
+
+      async resetTarget({ targetName }) {
+        const target = (api.getConfig('syncTargets') || []).find(t => t.name === targetName)
+        if (!target?.localDestination) return { error: 'Target not found' }
         
-        removeAllManifests(target.localDestination)
+        const targetRoot = target.localDestination
+        targetLastScanTime[targetName] = 0
         
-        return { message: `Sync reset completed for ${targetName}` }
+        ;[getNodeFilePath(targetRoot), getGlobalStatePath(targetRoot), 
+          getIndexFilePath(targetRoot, targetName), getFailedQueuePath(targetRoot, targetName),
+          getSlimeNetworkPath(targetRoot)].forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p) })
+        
+        return { message: `Reset completed for ${targetName}` }
       },
 
       async testTarget({ targetName }) {
-        const syncTargets = api.getConfig('syncTargets') || []
-        const target = syncTargets.find(t => t.name === targetName)
-        
-        if (!target) {
-          return { error: 'Target not found' }
-        }
-        
+        const target = (api.getConfig('syncTargets') || []).find(t => t.name === targetName)
+        if (!target) return { error: 'Target not found' }
         try {
           const apiUrl = new URL(target.remoteAddress)
-          const serverAvailable = await checkServerAvailable(apiUrl, target.username, target.password)
-          
-          if (!serverAvailable) {
-            return { error: 'Server unavailable' }
-          }
-          
-          const fileList = await getRemoteFileList(target.remoteAddress, target.name, api, target.username, target.password)
-          
-          const dirs = fileList.filter(item => item.n.endsWith('/')).length
-          const files = fileList.length - dirs
-          
-          return {
-            success: true,
-            target: targetName,
-            destination: target.localDestination,
-            dirs: dirs,
-            files: files,
-            total: fileList.length,
-            auth: !!(target.username && target.password)
-          }
+          if (!await checkServerAvailable(apiUrl, target.username, target.password)) return { error: 'Server unavailable' }
+          const fileList = await getRemoteFileList(`${apiUrl.protocol}//${apiUrl.host}/~/api/get_file_list?uri=${encodeURIComponent(apiUrl.pathname)}`, target.name, target.username, target.password)
+          return { success: true, target: targetName, files: fileList.filter(i => !i.n?.endsWith('/')).length, dirs: fileList.filter(i => i.n?.endsWith('/')).length }
         } catch (error) {
           return { error: error.message }
-        }
-      },
-
-      async setTraceMode({ enabled }) {
-        const config = api.getConfig()
-        config.traceDebug = enabled
-        api.log(`[sync] Trace mode ${enabled ? 'enabled' : 'disabled'}`)
-        return { message: `Trace mode ${enabled ? 'enabled' : 'disabled'}` }
-      },
-
-      // 新增：獲取優先文件統計
-      async getPriorityStats({ targetName }) {
-        const syncTargets = api.getConfig('syncTargets') || []
-        const target = syncTargets.find(t => t.name === targetName)
-        
-        if (!target) {
-          return { error: 'Target not found' }
-        }
-        
-        if (!target.localDestination || !fs.existsSync(target.localDestination)) {
-          return { error: 'Target destination not found' }
-        }
-
-        const priorityPatterns = (target.priorityPatterns || '*.mp4,*.mkv,*.avi,*.jpg,*.png,*.pdf')
-          .split(',')
-          .map(p => p.trim())
-          .filter(p => p.length > 0)
-
-        // 掃描所有 manifest 收集優先文件統計
-        const collectPriorityStats = (dir) => {
-          if (!fs.existsSync(dir)) return { total: 0, pending: 0, completed: 0 }
-          
-          let stats = { total: 0, pending: 0, completed: 0 }
-          const manifest = loadDirectoryManifest(dir, targetName)
-          
-          if (manifest && manifest.files) {
-            for (const file of manifest.files) {
-              if (file.isPriority || matchesPriorityPattern(file.name, priorityPatterns)) {
-                stats.total++
-                if (file.status === 'completed') {
-                  stats.completed++
-                } else if (file.status === 'pending' || file.status === 'downloading') {
-                  stats.pending++
-                }
-              }
-            }
-          }
-          
-          // 遞迴子目錄
-          if (manifest && manifest.subDirs) {
-            for (const subDir of manifest.subDirs) {
-              const subStats = collectPriorityStats(path.join(dir, subDir.name))
-              stats.total += subStats.total
-              stats.pending += subStats.pending
-              stats.completed += subStats.completed
-            }
-          }
-          
-          return stats
-        }
-
-        const priorityStats = collectPriorityStats(target.localDestination)
-        
-        return {
-          target: targetName,
-          patterns: priorityPatterns,
-          stats: priorityStats,
-          completion: priorityStats.total > 0 
-            ? Math.round((priorityStats.completed / priorityStats.total) * 100) 
-            : 0
-        }
-      },
-
-      // 新增：獲取目標的完整排除設置
-      async getTargetExcludeSettings({ targetName }) {
-        const syncTargets = api.getConfig('syncTargets') || []
-        const target = syncTargets.find(t => t.name === targetName)
-        
-        if (!target) {
-          return { error: 'Target not found' }
-        }
-
-        const globalExcludeFiles = api.getConfig('excludeFiles')
-        const globalExcludeFolders = api.getConfig('excludeFolders')
-        const excludeSettings = getExcludeSettings(target)
-
-        return {
-          target: targetName,
-          enabled: target.enabled !== false,
-          global: {
-            excludeFiles: globalExcludeFiles,
-            excludeFolders: globalExcludeFolders
-          },
-          targetSpecific: {
-            excludeFiles: target.targetExcludeFiles || '',
-            excludeFolders: target.targetExcludeFolders || ''
-          },
-          merged: {
-            excludeFiles: excludeSettings.excludeFiles,
-            excludeFolders: excludeSettings.excludeFolders
-          }
-        }
-      },
-
-      // 新增：啟用/禁用特定目標
-      async toggleTarget({ targetName, enabled }) {
-        const syncTargets = api.getConfig('syncTargets') || []
-        const targetIndex = syncTargets.findIndex(t => t.name === targetName)
-        
-        if (targetIndex === -1) {
-          return { error: 'Target not found' }
-        }
-
-        // 更新配置
-        const currentConfig = api.getConfig()
-        currentConfig.syncTargets[targetIndex].enabled = enabled
-        
-        api.log(`[sync] Target "${targetName}" ${enabled ? 'enabled' : 'disabled'}`)
-        
-        return { 
-          message: `Target "${targetName}" ${enabled ? 'enabled' : 'disabled'} successfully`,
-          target: currentConfig.syncTargets[targetIndex]
-        }
-      },
-
-      // 新增：獲取所有目標的啟用狀態
-      async getTargetsStatus() {
-        const syncTargets = api.getConfig('syncTargets') || []
-        
-        return {
-          total: syncTargets.length,
-          enabled: syncTargets.filter(t => t.enabled !== false).length,
-          disabled: syncTargets.filter(t => t.enabled === false).length,
-          targets: syncTargets.map(t => ({
-            name: t.name,
-            enabled: t.enabled !== false,
-            priority: t.priority || 1,
-            destination: t.localDestination
-          }))
-        }
-      },
-
-      // 新增：获取定时设置
-      async getScheduleSettings() {
-        return {
-          enableScheduledSync: api.getConfig('enableScheduledSync'),
-          syncStartTime: api.getConfig('syncStartTime') || '00:30',
-          syncEndTime: api.getConfig('syncEndTime') || '08:30',
-          isInScheduledWindow: isInScheduledWindow,
-          nextWindowStart: getNextScheduledWindowStart().toISOString(),
-          nextWindowEnd: getNextScheduledWindowEnd().toISOString()
-        }
-      },
-
-      // 新增：手动触发窗口检查
-      async checkScheduledWindow() {
-        checkScheduledWindow()
-        return {
-          isInScheduledWindow: isInScheduledWindow,
-          message: isInScheduledWindow ? 'Currently in scheduled window' : 'Outside scheduled window'
         }
       }
     }
