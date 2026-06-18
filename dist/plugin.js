@@ -139,7 +139,7 @@ exports.config = {
       synapseCooldown: {
         type: 'number',
         label: 'Synapse Cooldown (minutes)',
-        defaultValue: 5,
+        defaultValue: 30,
         helperText: 'Minimum time between synapse-triggered syncs (1-60 minutes)',
         xs: 6,
         min: 1,
