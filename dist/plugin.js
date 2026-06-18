@@ -1,4 +1,4 @@
-exports.version = 6.1
+exports.version = 6.2
 exports.description = "Sync folders from remote HFS3 server (Dual-list verification sync with distributed manifests and slime mold optimization)"
 exports.apiRequired = 10
 exports.repo = "Hug3O/Filessync-plugin"
@@ -56,7 +56,7 @@ exports.config = {
       remoteAddress: {
         type: 'string',
         label: 'Remote URL',
-        helperText: 'Full URL of the remote folder, e.g., http://192.168.1.224/Patch/',
+        helperText: 'Full URL of the remote folder, e.g., http://192.168.1.224/h/Patch/',
         required: true,
         xs: 12
       },
@@ -133,34 +133,25 @@ exports.config = {
         type: 'boolean',
         defaultValue: true,
         label: 'Enable Slime Synapse',
-        helperText: 'Trigger scan when frontend accesses files in this target. Works independently of Slime Mold.',
+        helperText: 'Trigger full sync when frontend accesses files in this target.',
         xs: 6
       },
       synapseCooldown: {
         type: 'number',
         label: 'Synapse Cooldown (minutes)',
-        defaultValue: 10,
-        helperText: 'Minimum time between scans triggered by slime synapse (1-60 minutes)',
+        defaultValue: 5,
+        helperText: 'Minimum time between synapse-triggered syncs (1-60 minutes)',
         xs: 6,
         min: 1,
-        max:1440
+        max: 60
       }
     }
-  },
-  synapseCompensationInterval: {
-    type: 'number',
-    label: 'Synapse Compensation Interval (seconds)',
-    defaultValue: 60,
-    helperText: 'How often to check for missed synapse-triggered scans (30-600 seconds)',
-    xs: 6,
-    min: 30,
-    max: 600
   },
   synapseMergeWindow: {
     type: 'number',
     label: 'Synapse Merge Window (seconds)',
-    defaultValue: 2,
-    helperText: 'Merge multiple access requests within this window into a single scan (1-10 seconds)',
+    defaultValue: 3,
+    helperText: 'Merge multiple access requests within this window into a single sync trigger (1-10 seconds)',
     xs: 6,
     min: 1,
     max: 10
@@ -260,17 +251,9 @@ exports.init = api => {
   let shouldStopSync = false
   let checkpointTimer = null
   let slimeMoldCheckTimer = null
-  let synapseCompensationTimer = null
 
   const targetLastScanTime = {}
-
-  // 黏菌突觸冷卻時間記錄
   const synapseCooldowns = {}
-
-  // 補償掃描追蹤
-  const pendingSynapsePaths = {}
-
-  // 請求合併追蹤
   const pendingSynapseTriggers = {}
 
   const MANIFEST_VERSION = '5.9'
@@ -312,8 +295,6 @@ exports.init = api => {
 
   const ILLEGAL_FILENAME_CHARS = /[<>:"/\\|?*]/g
 
-  // ========== URL編碼輔助函數 ==========
-
   const encodeURIComponentSafe = (str) => {
     return encodeURIComponent(str)
       .replace(/!/g, '%21')
@@ -329,12 +310,16 @@ exports.init = api => {
     const safeName = (targetName || 'unknown').replace(/[<>:"/\\|?*]/g, '_')
     return path.join(targetRoot, `${FAILED_FILE_PREFIX}${safeName}.json`)
   }
+  const getIndexFilePath = (targetRoot, targetName) => {
+    const safeName = (targetName || 'unknown').replace(/[<>:"/\\|?*]/g, '_')
+    return path.join(targetRoot, `.sync_${safeName}_index.json`)
+  }
   const getGlobalStatePath = (targetRoot) => path.join(targetRoot, GLOBAL_STATE_FILE)
   const getSlimeMoldPath = (dirPath) => path.join(dirPath, SLIME_MOLD_FILE)
   const getSlimeNetworkPath = (targetRoot) => path.join(targetRoot, SLIME_NETWORK_FILE)
-
+  
   const isSyncMetaFile = (filename) => {
-    return filename === NODE_FILE || filename.startsWith(FAILED_FILE_PREFIX) ||
+    return filename === NODE_FILE || filename.startsWith(FAILED_FILE_PREFIX) || 
            filename.startsWith('.sync_') || filename === GLOBAL_STATE_FILE ||
            filename === SLIME_MOLD_FILE || filename === SLIME_NETWORK_FILE
   }
@@ -343,48 +328,52 @@ exports.init = api => {
   const logVerbose = (msg) => { if (api.getConfig('verboseDebug')) api.log(msg) }
   const logError = (msg) => { if (api.getConfig('debug')) api.log(`[error] ${msg}`) }
 
-  // ========== 黏菌演算法相關函數 ==========
+  // ========== 黏菌算法相关函数 ==========
 
-  const createSlimeNetwork = (targetName, targetRoot, syncIntervalDays) => ({
-    signature: MANIFEST_SIGNATURE,
-    version: MANIFEST_VERSION,
-    targetName,
-    targetRoot,
-    syncIntervalDays,
-    createdAt: new Date().toISOString(),
-    lastUpdated: new Date().toISOString(),
-    totalSyncs: 0,
-    extraScansThisCycle: 0,
-    lastCycleReset: new Date().toISOString(),
-    branches: {},
-    hotPaths: []
-  })
+  const createSlimeNetwork = (targetName, targetRoot, syncIntervalDays) => {
+    return {
+      signature: MANIFEST_SIGNATURE,
+      version: MANIFEST_VERSION,
+      targetName,
+      targetRoot,
+      syncIntervalDays,
+      createdAt: new Date().toISOString(),
+      lastUpdated: new Date().toISOString(),
+      totalSyncs: 0,
+      extraScansThisCycle: 0,
+      lastCycleReset: new Date().toISOString(),
+      branches: {},
+      hotPaths: []
+    }
+  }
 
-  const createSlimeNode = (dirPath, relativePath, syncIntervalDays) => ({
-    signature: MANIFEST_SIGNATURE,
-    version: MANIFEST_VERSION,
-    path: relativePath,
-    syncIntervalDays,
-    createdAt: new Date().toISOString(),
-    lastUpdated: new Date().toISOString(),
-    heat: 0,
-    maxHeatEver: 0,
-    heatHistory: [],
-    changeStats: {
-      totalFiles: 0,
-      changedFiles: 0,
-      newFiles: 0,
-      deletedFiles: 0,
-      timestampFixed: 0,
-      lastChange: null,
-      changeRate: 0
-    },
-    scanCount: 0,
-    extraScansTriggered: 0,
-    lastScanTime: null,
-    parentHeat: 0,
-    childrenHeat: {}
-  })
+  const createSlimeNode = (dirPath, relativePath, syncIntervalDays) => {
+    return {
+      signature: MANIFEST_SIGNATURE,
+      version: MANIFEST_VERSION,
+      path: relativePath,
+      syncIntervalDays,
+      createdAt: new Date().toISOString(),
+      lastUpdated: new Date().toISOString(),
+      heat: 0,
+      maxHeatEver: 0,
+      heatHistory: [],
+      changeStats: {
+        totalFiles: 0,
+        changedFiles: 0,
+        newFiles: 0,
+        deletedFiles: 0,
+        timestampFixed: 0,
+        lastChange: null,
+        changeRate: 0
+      },
+      scanCount: 0,
+      extraScansTriggered: 0,
+      lastScanTime: null,
+      parentHeat: 0,
+      childrenHeat: {}
+    }
+  }
 
   const calculateDecayRate = (syncIntervalDays, checkIntervalMs) => {
     const effectiveDays = Math.max(0.5, syncIntervalDays || 3)
@@ -566,11 +555,7 @@ exports.init = api => {
     const changeRate = totalFiles > 0 ? changeCount / totalFiles : 0
     const nodePath = relativePath ? path.join(network.targetRoot, relativePath) : network.targetRoot
     const slimeNode = loadSlimeNode(nodePath)
-    if (slimeNode) {
-      branch.heat = slimeNode.heat
-    } else {
-      branch.heat = parseFloat(Math.min(100, changeRate * 80 + 5).toFixed(2))
-    }
+    branch.heat = slimeNode ? slimeNode.heat : parseFloat(Math.min(100, changeRate * 80 + 5).toFixed(2))
     branch.changeCount = changeCount
     branch.totalFiles = totalFiles
     if (changeCount > 0) branch.lastChange = new Date().toISOString()
@@ -594,20 +579,15 @@ exports.init = api => {
       logDebug(`[slime] [${targetName}] Created new network`)
       return
     }
-    if (network.syncIntervalDays !== baseIntervalDays) {
-      network.syncIntervalDays = baseIntervalDays
-    }
+    if (network.syncIntervalDays !== baseIntervalDays) network.syncIntervalDays = baseIntervalDays
     const cycleStartTime = new Date(network.lastCycleReset).getTime()
     const cycleDuration = baseIntervalDays * 24 * 60 * 60 * 1000
-    if (Date.now() - cycleStartTime >= cycleDuration) {
-      network = resetSlimeCycle(network)
-    }
+    if (Date.now() - cycleStartTime >= cycleDuration) network = resetSlimeCycle(network)
     let triggeredPaths = []
     for (const hotPath of network.hotPaths) {
       if (network.extraScansThisCycle >= MAX_EXTRA_SCANS_PER_CYCLE) break
       const nodePath = path.join(targetRoot, hotPath)
-      let nodeData = loadSlimeNode(nodePath)
-      if (!nodeData) nodeData = createSlimeNode(nodePath, hotPath, baseIntervalDays)
+      let nodeData = loadSlimeNode(nodePath) || createSlimeNode(nodePath, hotPath, baseIntervalDays)
       if (shouldTriggerExtraScan(network, hotPath, nodeData, baseIntervalDays)) {
         triggeredPaths.push({ path: hotPath, node: nodeData })
         network.extraScansThisCycle++
@@ -632,17 +612,18 @@ exports.init = api => {
     if (triggeredPaths.length > 0) {
       logDebug(`[slime] [${targetName}] Extra scans: ${triggeredPaths.map(p => p.path).join(', ')}`)
       for (const { path: scanPath } of triggeredPaths) {
-        await localScanAndSync(target, targetRoot, scanPath, network, true)
+        await slimeMoldLocalScan(target, targetRoot, scanPath, network)
       }
     }
     saveSlimeNetwork(targetRoot, network)
   }
 
-  const localScanAndSync = async (target, targetRoot, relativePath, network, useHeatTracking = false) => {
+  const slimeMoldLocalScan = async (target, targetRoot, relativePath, network) => {
     const targetName = target.name
     const baseIntervalDays = target.syncInterval !== undefined ? target.syncInterval : 3
     try {
       const localPath = relativePath === '/' ? targetRoot : path.join(targetRoot, relativePath)
+      let nodeData = loadSlimeNode(localPath) || createSlimeNode(localPath, relativePath, baseIntervalDays)
       const apiUrl = new URL(target.remoteAddress)
       const exploreUrl = buildExploreUrl(`${apiUrl.protocol}//${apiUrl.host}`, apiUrl.pathname, relativePath)
       const fileList = await getRemoteFileList(exploreUrl, targetName, target.username, target.password)
@@ -666,47 +647,34 @@ exports.init = api => {
       for (const fileName of Object.keys(localScan.files)) {
         if (!remoteFiles[fileName]) changeCount++
       }
-      if (useHeatTracking && target.enableSlimeMold && network) {
-        let nodeData = loadSlimeNode(localPath) || createSlimeNode(localPath, relativePath, baseIntervalDays)
-        nodeData.changeStats.totalFiles = Object.keys(remoteFiles).length
-        nodeData.changeStats.changedFiles = changeCount
-        updateSlimeHeat(nodeData, changeCount, network)
-        nodeData.extraScansTriggered = (nodeData.extraScansTriggered || 0) + 1
-        saveSlimeNode(localPath, nodeData)
-      }
-      logDebug(`[synapse] [${targetName}] Scan '${relativePath || '/'}': ${changeCount} changes, files:${Object.keys(remoteFiles).length}`)
+      nodeData.changeStats.totalFiles = Object.keys(remoteFiles).length
+      nodeData.changeStats.changedFiles = changeCount
+      updateSlimeHeat(nodeData, changeCount, network)
+      nodeData.extraScansTriggered = (nodeData.extraScansTriggered || 0) + 1
+      saveSlimeNode(localPath, nodeData)
+      logDebug(`[slime] [${targetName}] Scan '${relativePath || '/'}': ${changeCount} changes, heat:${nodeData.heat}, files:${Object.keys(remoteFiles).length}`)
       if (changeCount > 0) {
-        const comparison = compareListsForScan(remoteFiles, localScan.files)
+        const comparison = compareListsForSlime(remoteFiles, localScan.files)
         for (const file of comparison.filesToDownload) {
           try {
             const fileRemotePath = relativePath === '/' ? file.name : `${relativePath}/${file.name}`
-            await downloadWithAria2(
-              buildDownloadUrl(target.remoteAddress, fileRemotePath),
-              path.join(localPath, file.name),
-              targetName, target.username, target.password,
-              file.mtime, file.ctime
-            )
-            logDebug(`[synapse] [${targetName}] Downloaded: ${file.name}`)
-          } catch (error) {
-            logDebug(`[synapse] [${targetName}] Failed: ${file.name}`)
-          }
+            await downloadWithAria2(buildDownloadUrl(target.remoteAddress, fileRemotePath), path.join(localPath, file.name), targetName, target.username, target.password, file.mtime, file.ctime)
+            logDebug(`[slime] [${targetName}] Downloaded: ${file.name}`)
+          } catch (error) { logDebug(`[slime] [${targetName}] Failed: ${file.name}`) }
         }
         for (const file of comparison.filesToDelete) {
           try {
             const filePath = path.join(localPath, file.name)
-            if (fs.existsSync(filePath)) {
-              fs.unlinkSync(filePath)
-              logDebug(`[synapse] [${targetName}] Deleted: ${file.name}`)
-            }
+            if (fs.existsSync(filePath)) { fs.unlinkSync(filePath); logDebug(`[slime] [${targetName}] Deleted: ${file.name}`) }
           } catch (e) {}
         }
       }
     } catch (error) {
-      logError(`[${targetName}] Synapse scan failed '${relativePath}': ${error.message}`)
+      logError(`[${targetName}] Slime scan failed '${relativePath}': ${error.message}`)
     }
   }
 
-  const compareListsForScan = (remoteFiles, localFiles) => {
+  const compareListsForSlime = (remoteFiles, localFiles) => {
     const filesToDownload = []
     const filesToDelete = []
     for (const [fileName, remoteInfo] of Object.entries(remoteFiles)) {
@@ -727,7 +695,7 @@ exports.init = api => {
       const localPath = relativePath ? path.join(targetRoot, relativePath) : targetRoot
       const baseIntervalDays = target.syncInterval !== undefined ? target.syncInterval : 3
       let slimeNode = loadSlimeNode(localPath) || createSlimeNode(localPath, relativePath || '/', baseIntervalDays)
-      const changeCount = comparison.summary.filesToAdd + comparison.summary.filesToUpdate +
+      const changeCount = comparison.summary.filesToAdd + comparison.summary.filesToUpdate + 
                           comparison.summary.filesToRemove + (comparison.summary.filesToFixTimestamp || 0)
       const totalFiles = Object.keys(nodeData?.remoteList?.files || comparison?.remoteList?.files || {}).length
       slimeNode.changeStats.totalFiles = totalFiles
@@ -739,131 +707,6 @@ exports.init = api => {
       saveSlimeNetwork(targetRoot, network)
     } catch (error) {
       logError(`[${target.name}] Slime update failed: ${error.message}`)
-    }
-  }
-
-  // ========== 黏菌突觸功能 ==========
-
-  const canTriggerSynapse = (target) => {
-    if (target.enableSynapse === false) return { allowed: false, remainingMs: Infinity }
-    const targetKey = target.name
-    const now = Date.now()
-    const cooldownMs = (target.synapseCooldown || 5) * 60 * 1000
-    if (!synapseCooldowns[targetKey]) synapseCooldowns[targetKey] = 0
-    const timeSinceLastTrigger = now - synapseCooldowns[targetKey]
-    const remainingMs = cooldownMs - timeSinceLastTrigger
-    return {
-      allowed: timeSinceLastTrigger >= cooldownMs,
-      remainingMs: Math.max(0, remainingMs)
-    }
-  }
-
-  const updateSynapseCooldown = (targetName) => {
-    synapseCooldowns[targetName] = Date.now()
-  }
-
-  const addPendingSynapsePath = (targetKey, relativePath) => {
-    if (!pendingSynapsePaths[targetKey]) pendingSynapsePaths[targetKey] = new Map()
-    pendingSynapsePaths[targetKey].set(relativePath, Date.now())
-  }
-
-  const flushPendingSynapsePaths = (targetKey) => {
-    const paths = pendingSynapsePaths[targetKey]
-    if (!paths || paths.size === 0) return []
-    const result = Array.from(paths.entries()).map(([p, t]) => ({ path: p, timestamp: t }))
-    delete pendingSynapsePaths[targetKey]
-    return result
-  }
-
-  const triggerSynapseScan = async (target, targetRoot, realPath) => {
-    const targetName = target.name
-
-    // 解析到目錄層級
-    let relativePath = '/'
-    const targetRootNorm = path.normalize(targetRoot).replace(/\\/g, '/')
-    const realPathNorm = path.normalize(realPath).replace(/\\/g, '/')
-
-    if (realPathNorm.startsWith(targetRootNorm)) {
-      let rel = realPathNorm.substring(targetRootNorm.length)
-      if (rel.startsWith('/')) rel = rel.substring(1)
-      if (rel) {
-        const lastSlash = rel.lastIndexOf('/')
-        relativePath = lastSlash >= 0 ? rel.substring(0, lastSlash) : '/'
-      }
-    }
-
-    // 請求合併：mergeWindow 秒內的請求合併為一次觸發
-    const mergeWindowMs = (api.getConfig('synapseMergeWindow') || 2) * 1000
-
-    if (!pendingSynapseTriggers[targetName]) {
-      pendingSynapseTriggers[targetName] = { timer: null, paths: new Set() }
-    }
-
-    const pending = pendingSynapseTriggers[targetName]
-    pending.paths.add(relativePath)
-
-    if (pending.timer) return // 已有待處理，只更新路徑集合
-
-    pending.timer = setTimeout(async () => {
-      pending.timer = null
-      const paths = Array.from(pending.paths)
-      pending.paths.clear()
-
-      const cooldownCheck = canTriggerSynapse(target)
-      if (!cooldownCheck.allowed) {
-        addPendingSynapsePath(targetName, '/')
-        logDebug(`[synapse] [${targetName}] Merged ${paths.length} requests, queued (cooldown: ${Math.ceil(cooldownCheck.remainingMs / 1000)}s)`)
-        delete pendingSynapseTriggers[targetName]
-        return
-      }
-
-      logDebug(`[synapse] [${targetName}] Merged ${paths.length} requests, scanning /`)
-      updateSynapseCooldown(targetName)
-
-      let network = null
-      if (target.enableSlimeMold) {
-        network = loadSlimeNetwork(targetRoot)
-      }
-
-      if (!isSyncing) {
-        await localScanAndSync(target, targetRoot, '/', network, target.enableSlimeMold)
-      }
-
-      delete pendingSynapseTriggers[targetName]
-    }, mergeWindowMs)
-  }
-
-  const runSynapseCompensation = async () => {
-    if (!api.getConfig('enableSync') || isSyncing) return
-    const syncTargets = api.getConfig('syncTargets') || []
-    for (const target of syncTargets) {
-      if (target.enabled === false || target.enableSynapse === false) continue
-      if (!target.localDestination) continue
-      const targetKey = target.name
-      const targetRoot = target.localDestination
-      const cooldownCheck = canTriggerSynapse(target)
-      if (!cooldownCheck.allowed) continue
-      const pendingPaths = flushPendingSynapsePaths(targetKey)
-      if (pendingPaths.length === 0) continue
-      const uniquePaths = new Set()
-      for (const { path: p } of pendingPaths) {
-        let dirPath = p
-        if (dirPath !== '/' && dirPath.includes('/')) {
-          dirPath = dirPath.substring(0, dirPath.lastIndexOf('/'))
-          if (!dirPath) dirPath = '/'
-        } else if (dirPath !== '/' && !dirPath.includes('/')) {
-          dirPath = '/'
-        }
-        uniquePaths.add(dirPath)
-      }
-      logDebug(`[synapse] [${targetKey}] Compensation scan: ${uniquePaths.size} directories from ${pendingPaths.length} queued requests`)
-      updateSynapseCooldown(targetKey)
-      let network = null
-      if (target.enableSlimeMold) network = loadSlimeNetwork(targetRoot)
-      for (const scanPath of uniquePaths) {
-        if (isSyncing) break
-        await localScanAndSync(target, targetRoot, scanPath, network, target.enableSlimeMold)
-      }
     }
   }
 
@@ -1147,8 +990,6 @@ exports.init = api => {
     })
   }
 
-  // ========== URL構建函數 ==========
-
   const buildExploreUrl = (baseUrl, remoteRootPath, remotePath) => {
     let fullPath = remoteRootPath.endsWith('/') ? remoteRootPath : remoteRootPath + '/'
     if (remotePath && remotePath !== '/') fullPath += remotePath.replace(/^\//, '')
@@ -1230,9 +1071,7 @@ exports.init = api => {
 
   const isTimestampMatch = (remoteTime, localTime, toleranceSeconds = DEFAULT_TIMESTAMP_TOLERANCE) => {
     if (!remoteTime || !localTime) return false
-    try {
-      return Math.abs(new Date(remoteTime) - new Date(localTime)) / 1000 <= toleranceSeconds
-    } catch (e) { return false }
+    try { return Math.abs(new Date(remoteTime) - new Date(localTime)) / 1000 <= toleranceSeconds } catch (e) { return false }
   }
 
   const setFileTimestamps = async (filePath, mtime, ctime) => {
@@ -1240,13 +1079,9 @@ exports.init = api => {
       if (!mtime && !ctime) return
       const mtimeDate = mtime ? new Date(mtime) : null
       const ctimeDate = ctime ? new Date(ctime) : null
-      if (mtimeDate && !isNaN(mtimeDate)) {
-        fs.utimesSync(filePath, ctimeDate && !isNaN(ctimeDate) ? ctimeDate : mtimeDate, mtimeDate)
-      }
+      if (mtimeDate && !isNaN(mtimeDate)) fs.utimesSync(filePath, ctimeDate && !isNaN(ctimeDate) ? ctimeDate : mtimeDate, mtimeDate)
       if (ctimeDate && !isNaN(ctimeDate) && process.platform === 'win32') {
-        try {
-          await execAsync(`powershell -Command "(Get-Item '${filePath}').CreationTime = [DateTime]::Parse('${ctimeDate.toISOString()}')"`, { windowsHide: true })
-        } catch (e) {}
+        try { await execAsync(`powershell -Command "(Get-Item '${filePath}').CreationTime = [DateTime]::Parse('${ctimeDate.toISOString()}')"`, { windowsHide: true }) } catch (e) {}
       }
     } catch (e) {}
   }
@@ -1279,9 +1114,7 @@ exports.init = api => {
         const { stdout } = await execAsync(`where aria2c`, { windowsHide: true })
         if (stdout?.trim()) aria2Executable = stdout.trim().split('\n')[0]
         else throw new Error('aria2c not found')
-      } catch (e) {
-        throw new Error(`aria2c not found. Please install aria2 or configure correct path.`)
-      }
+      } catch (e) { throw new Error(`aria2c not found. Please install aria2 or configure correct path.`) }
     }
     const dir = path.dirname(localPath)
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
@@ -1290,39 +1123,18 @@ exports.init = api => {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         let args = [
-          `"${aria2Executable}"`,
-          `--dir="${dir}"`,
-          `--out="${safeFileName}"`,
-          '--allow-overwrite=true',
-          '--auto-file-renaming=false',
-          '--continue=true',
-          `--max-tries=1`,
-          `--retry-wait=${retryDelay}`,
-          '--max-concurrent-downloads=1',
-          '--split=1',
-          '--timeout=60',
-          '--connect-timeout=30',
-          '--max-connection-per-server=1',
-          '--disable-ipv6=true',
-          '--quiet=true',
-          '--summary-interval=0',
-          '--console-log-level=error'
+          `"${aria2Executable}"`, `--dir="${dir}"`, `--out="${safeFileName}"`,
+          '--allow-overwrite=true', '--auto-file-renaming=false', '--continue=true',
+          `--max-tries=1`, `--retry-wait=${retryDelay}`, '--max-concurrent-downloads=1', '--split=1',
+          '--timeout=60', '--connect-timeout=30', '--max-connection-per-server=1', '--disable-ipv6=true',
+          '--quiet=true', '--summary-interval=0', '--console-log-level=error'
         ]
-        if (username && password) {
-          args.push(`--http-user="${username}"`)
-          args.push(`--http-passwd="${password}"`)
-        }
-        if (speedLimit > 0) {
-          args.push(`--max-overall-download-limit=${speedLimit}K`)
-          args.push(`--max-download-limit=${speedLimit}K`)
-        }
+        if (username && password) { args.push(`--http-user="${username}"`); args.push(`--http-passwd="${password}"`) }
+        if (speedLimit > 0) { args.push(`--max-overall-download-limit=${speedLimit}K`); args.push(`--max-download-limit=${speedLimit}K`) }
         args.push(`"${remoteUrl}"`)
         await execAsync(args.join(' '), { maxBuffer: 10 * 1024 * 1024, windowsHide: true, timeout: 300000 })
         if (fileName !== safeFileName && fs.existsSync(path.join(dir, safeFileName))) {
-          try {
-            if (fs.existsSync(path.join(dir, fileName))) fs.unlinkSync(path.join(dir, fileName))
-            fs.renameSync(path.join(dir, safeFileName), path.join(dir, fileName))
-          } catch (e) {}
+          try { if (fs.existsSync(path.join(dir, fileName))) fs.unlinkSync(path.join(dir, fileName)); fs.renameSync(path.join(dir, safeFileName), path.join(dir, fileName)) } catch (e) {}
         }
         if (fs.existsSync(localPath) && fs.statSync(localPath).size > 0) {
           if (expectedMtime || expectedCtime) await setFileTimestamps(localPath, expectedMtime, expectedCtime)
@@ -1340,25 +1152,9 @@ exports.init = api => {
 
   const compareDualLists = (remoteList, localList) => {
     const result = {
-      hasChanges: false,
-      filesToDownload: [],
-      filesToFixTimestamp: [],
-      filesToDelete: [],
-      dirsToDelete: [],
-      newRemoteDirs: [],
-      remoteList,
-      localList,
-      summary: {
-        filesToAdd: 0,
-        filesToUpdate: 0,
-        filesToFixTimestamp: 0,
-        filesToRemove: 0,
-        dirsToAdd: 0,
-        dirsToRemove: 0,
-        totalBytesToDownload: 0,
-        sizeOnlyFiles: 0,
-        dualVerifyFiles: 0
-      }
+      hasChanges: false, filesToDownload: [], filesToFixTimestamp: [], filesToDelete: [], dirsToDelete: [], newRemoteDirs: [],
+      remoteList, localList,
+      summary: { filesToAdd: 0, filesToUpdate: 0, filesToFixTimestamp: 0, filesToRemove: 0, dirsToAdd: 0, dirsToRemove: 0, totalBytesToDownload: 0, sizeOnlyFiles: 0, dualVerifyFiles: 0 }
     }
     const remoteFiles = remoteList?.files || {}
     const remoteDirs = remoteList?.subDirs || {}
@@ -1369,48 +1165,28 @@ exports.init = api => {
       const useDualVerification = needsDualVerification(fileName)
       if (!localInfo) {
         result.filesToDownload.push({ name: fileName, size: remoteInfo.size, mtime: remoteInfo.mtime, ctime: remoteInfo.ctime, reason: 'missing', isPriority: remoteInfo.isPriority || false, useDualVerification })
-        result.summary.filesToAdd++
-        result.summary.totalBytesToDownload += remoteInfo.size
-        result.hasChanges = true
+        result.summary.filesToAdd++; result.summary.totalBytesToDownload += remoteInfo.size; result.hasChanges = true
       } else if (localInfo.size !== remoteInfo.size) {
         result.filesToDownload.push({ name: fileName, size: remoteInfo.size, mtime: remoteInfo.mtime, ctime: remoteInfo.ctime, reason: 'size_changed', isPriority: remoteInfo.isPriority || false, useDualVerification })
-        result.summary.filesToUpdate++
-        result.summary.totalBytesToDownload += remoteInfo.size
-        result.hasChanges = true
+        result.summary.filesToUpdate++; result.summary.totalBytesToDownload += remoteInfo.size; result.hasChanges = true
       } else if (remoteInfo.mtime && !isTimestampMatch(remoteInfo.mtime, localInfo.mtime)) {
         if (useDualVerification) {
           result.filesToDownload.push({ name: fileName, size: remoteInfo.size, mtime: remoteInfo.mtime, ctime: remoteInfo.ctime, reason: 'timestamp_mismatch', isPriority: remoteInfo.isPriority || false, useDualVerification: true })
-          result.summary.filesToUpdate++
-          result.summary.totalBytesToDownload += remoteInfo.size
-          result.summary.dualVerifyFiles++
+          result.summary.filesToUpdate++; result.summary.totalBytesToDownload += remoteInfo.size; result.summary.dualVerifyFiles++; result.hasChanges = true
         } else {
           result.filesToFixTimestamp.push({ name: fileName, mtime: remoteInfo.mtime, ctime: remoteInfo.ctime })
-          result.summary.filesToFixTimestamp++
-          result.summary.sizeOnlyFiles++
+          result.summary.filesToFixTimestamp++; result.summary.sizeOnlyFiles++; result.hasChanges = true
         }
-        result.hasChanges = true
       }
     }
-    for (const [fileName, localInfo] of Object.entries(localFiles)) {
-      if (!remoteFiles[fileName]) {
-        result.filesToDelete.push({ name: fileName, size: localInfo.size })
-        result.summary.filesToRemove++
-        result.hasChanges = true
-      }
+    for (const [fileName] of Object.entries(localFiles)) {
+      if (!remoteFiles[fileName]) { result.filesToDelete.push({ name: fileName, size: localFiles[fileName].size }); result.summary.filesToRemove++; result.hasChanges = true }
     }
     for (const dirName of Object.keys(remoteDirs)) {
-      if (!localDirs[dirName]) {
-        result.newRemoteDirs.push({ name: dirName })
-        result.summary.dirsToAdd++
-        result.hasChanges = true
-      }
+      if (!localDirs[dirName]) { result.newRemoteDirs.push({ name: dirName }); result.summary.dirsToAdd++; result.hasChanges = true }
     }
     for (const dirName of Object.keys(localDirs)) {
-      if (!remoteDirs[dirName]) {
-        result.dirsToDelete.push({ name: dirName })
-        result.summary.dirsToRemove++
-        result.hasChanges = true
-      }
+      if (!remoteDirs[dirName]) { result.dirsToDelete.push({ name: dirName }); result.summary.dirsToRemove++; result.hasChanges = true }
     }
     return result
   }
@@ -1419,21 +1195,13 @@ exports.init = api => {
     const targetName = target.name
     const fileDelay = api.getConfig('fileDelay')
     const downloadConcurrency = api.getConfig('concurrentDownloads') || 1
-    if (target.enabled === false) {
-      logDebug(`[sync] [${targetName}] Disabled, skipping`)
-      return
-    }
-    if (!shouldScanTarget(target)) {
-      logDebug(`[sync] [${targetName}] Not due for sync`)
-      return
-    }
+    if (target.enabled === false) { logDebug(`[sync] [${targetName}] Disabled, skipping`); return }
+    if (!shouldScanTarget(target)) { logDebug(`[sync] [${targetName}] Not due for sync`); return }
     logDebug(`[sync] [${targetName}] Starting sync -> ${targetRoot}`)
     if (!fs.existsSync(targetRoot)) fs.mkdirSync(targetRoot, { recursive: true })
     let globalState = loadGlobalSyncState(targetRoot)
     const isResuming = globalState?.state === 'paused'
-    if (!globalState || globalState.version !== MANIFEST_VERSION) {
-      globalState = createGlobalSyncState(targetName, targetRoot)
-    }
+    if (!globalState || globalState.version !== MANIFEST_VERSION) globalState = createGlobalSyncState(targetName, targetRoot)
     if (!isResuming) {
       globalState.totalDirs = globalState.processedDirs = globalState.totalFiles = globalState.downloadedFiles = globalState.failedFiles = globalState.timestampFixedFiles = 0
       globalState.completedDirs = globalState.errors = []
@@ -1443,21 +1211,14 @@ exports.init = api => {
     saveGlobalSyncState(targetRoot, globalState)
     if (target.enableSlimeMold) {
       let slimeNetwork = loadSlimeNetwork(targetRoot)
-      if (!slimeNetwork) {
-        slimeNetwork = createSlimeNetwork(targetName, targetRoot, target.syncInterval || 3)
-        saveSlimeNetwork(targetRoot, slimeNetwork)
-      }
+      if (!slimeNetwork) { slimeNetwork = createSlimeNetwork(targetName, targetRoot, target.syncInterval || 3); saveSlimeNetwork(targetRoot, slimeNetwork) }
     }
     await retryFailedFiles(targetRoot, target)
     const apiUrl = new URL(target.remoteAddress)
     const baseUrl = `${apiUrl.protocol}//${apiUrl.host}`
     const remoteRootPath = apiUrl.pathname
     const syncDirectory = async (remotePath, localPath) => {
-      if (shouldStopFn?.()) {
-        globalState.state = 'paused'
-        saveGlobalSyncState(targetRoot, globalState)
-        return { pendingCount: 0, failedFiles: [], interrupted: true }
-      }
+      if (shouldStopFn?.()) { globalState.state = 'paused'; saveGlobalSyncState(targetRoot, globalState); return { pendingCount: 0, failedFiles: [], interrupted: true } }
       if (fileDelay > 0) await new Promise(resolve => setTimeout(resolve, fileDelay))
       try {
         globalState.currentProcessingPath = localPath
@@ -1475,16 +1236,9 @@ exports.init = api => {
           if (!item?.n) continue
           const isDir = item.n.endsWith('/')
           const name = isDir ? item.n.slice(0, -1) : item.n
-          if (isDir) {
-            if (!shouldExcludeFolder(name, excludeSettings.excludeFolders)) remoteSubDirs[name] = { mtime: item.m || item.c || new Date().toISOString() }
-          } else if (!shouldExcludeFile(name, excludeSettings.excludeFiles, allowedExtensions)) {
-            remoteFiles[name] = {
-              size: item.s || 0,
-              mtime: item.m || null,
-              ctime: item.c || null,
-              isPriority: matchesPriorityPattern(name, (target.priorityPatterns || '').split(',').map(p => p.trim()).filter(p => p)),
-              useDualVerification: needsDualVerification(name)
-            }
+          if (isDir) { if (!shouldExcludeFolder(name, excludeSettings.excludeFolders)) remoteSubDirs[name] = { mtime: item.m || item.c || new Date().toISOString() } }
+          else if (!shouldExcludeFile(name, excludeSettings.excludeFiles, allowedExtensions)) {
+            remoteFiles[name] = { size: item.s || 0, mtime: item.m || null, ctime: item.c || null, isPriority: matchesPriorityPattern(name, (target.priorityPatterns || '').split(',').map(p => p.trim()).filter(p => p)), useDualVerification: needsDualVerification(name) }
           }
         }
         const newRemoteList = { files: remoteFiles, subDirs: remoteSubDirs, scannedAt: new Date().toISOString() }
@@ -1500,28 +1254,18 @@ exports.init = api => {
         updateSlimeAfterSync(target, targetRoot, remotePath, comparison, nodeData)
         for (const fileToFix of comparison.filesToFixTimestamp) {
           const localFilePath = path.join(localPath, fileToFix.name)
-          if (fs.existsSync(localFilePath)) {
-            await setFileTimestamps(localFilePath, fileToFix.mtime, fileToFix.ctime)
-            nodeData.syncStatus.timestampFixed++
-          }
+          if (fs.existsSync(localFilePath)) { await setFileTimestamps(localFilePath, fileToFix.mtime, fileToFix.ctime); nodeData.syncStatus.timestampFixed++ }
         }
         globalState.timestampFixedFiles = (globalState.timestampFixedFiles || 0) + nodeData.syncStatus.timestampFixed
         for (const fileToDelete of comparison.filesToDelete) {
           try { if (fs.existsSync(path.join(localPath, fileToDelete.name))) fs.unlinkSync(path.join(localPath, fileToDelete.name)) } catch (e) {}
         }
         for (const fileToDownload of comparison.filesToDownload) {
-          if (fileToDownload.reason !== 'missing') {
-            try { if (fs.existsSync(path.join(localPath, fileToDownload.name))) fs.unlinkSync(path.join(localPath, fileToDownload.name)) } catch (e) {}
-          }
+          if (fileToDownload.reason !== 'missing') { try { if (fs.existsSync(path.join(localPath, fileToDownload.name))) fs.unlinkSync(path.join(localPath, fileToDownload.name)) } catch (e) {} }
         }
         for (const dirToDelete of comparison.dirsToDelete) {
           const dirPath = path.join(localPath, dirToDelete.name)
-          try {
-            if (fs.existsSync(dirPath)) {
-              [getNodeFilePath(dirPath), getSlimeMoldPath(dirPath)].forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p) })
-              fs.rmSync(dirPath, { recursive: true, force: true })
-            }
-          } catch (e) {}
+          try { if (fs.existsSync(dirPath)) { [getNodeFilePath(dirPath), getSlimeMoldPath(dirPath)].forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p) }); fs.rmSync(dirPath, { recursive: true, force: true }) } } catch (e) {}
         }
         for (const newDir of comparison.newRemoteDirs) {
           const dirPath = path.join(localPath, newDir.name)
@@ -1536,10 +1280,7 @@ exports.init = api => {
           const activeDownloads = new Set()
           await new Promise((resolve) => {
             const processNext = async () => {
-              if (shouldStopFn?.() || (downloadQueue.length === 0 && activeDownloads.size === 0)) {
-                if (activeDownloads.size === 0) resolve()
-                return
-              }
+              if (shouldStopFn?.() || (downloadQueue.length === 0 && activeDownloads.size === 0)) { if (activeDownloads.size === 0) resolve(); return }
               while (activeDownloads.size < downloadConcurrency && downloadQueue.length > 0) {
                 const file = downloadQueue.shift()
                 const fileRemotePath = (!remotePath || remotePath === '/' ? '' : remotePath + '/') + file.name
@@ -1548,37 +1289,16 @@ exports.init = api => {
                 activeDownloads.add(file.name)
                 if (fileDelay > 0 && downloadedCount > 0) await new Promise(r => setTimeout(r, fileDelay))
                 downloadWithAria2(remoteFileUrl, localFilePath, targetName, target.username, target.password, file.mtime, file.ctime)
-                  .then(() => {
-                    downloadedCount++
-                    removeFromFailedQueue(targetRoot, targetName, fileRemotePath)
-                    globalState.downloadedFiles++
-                    saveGlobalSyncState(targetRoot, globalState)
-                    logDebug(`[sync] [${targetName}] Downloaded: ${file.name} (${formatBytes(file.size)})`)
-                  })
-                  .catch((error) => {
-                    failedFiles.push(file)
-                    addToFailedQueue(targetRoot, targetName, { remotePath: fileRemotePath, localPath: localFilePath, size: file.size, mtime: file.mtime, ctime: file.ctime }, error)
-                    globalState.failedFiles++
-                    saveGlobalSyncState(targetRoot, globalState)
-                    logError(`[${targetName}] Failed: ${file.name}`)
-                  })
-                  .finally(() => {
-                    activeDownloads.delete(file.name)
-                    processNext()
-                  })
+                  .then(() => { downloadedCount++; removeFromFailedQueue(targetRoot, targetName, fileRemotePath); globalState.downloadedFiles++; saveGlobalSyncState(targetRoot, globalState); logDebug(`[sync] [${targetName}] Downloaded: ${file.name} (${formatBytes(file.size)})`) })
+                  .catch((error) => { failedFiles.push(file); addToFailedQueue(targetRoot, targetName, { remotePath: fileRemotePath, localPath: localFilePath, size: file.size, mtime: file.mtime, ctime: file.ctime }, error); globalState.failedFiles++; saveGlobalSyncState(targetRoot, globalState); logError(`[${targetName}] Failed: ${file.name}`) })
+                  .finally(() => { activeDownloads.delete(file.name); processNext() })
               }
             }
             processNext()
           })
         }
         nodeData.syncStatus.phase = failedFiles.length > 0 ? 'partial' : 'synced'
-        Object.assign(nodeData.syncStatus, {
-          filesTotal: Object.keys(remoteFiles).length,
-          filesSynced: downloadedCount,
-          filesFailed: failedFiles.length,
-          lastSync: new Date().toISOString(),
-          syncEndTime: new Date().toISOString()
-        })
+        Object.assign(nodeData.syncStatus, { filesTotal: Object.keys(remoteFiles).length, filesSynced: downloadedCount, filesFailed: failedFiles.length, lastSync: new Date().toISOString(), syncEndTime: new Date().toISOString() })
         nodeData.comparisonResult.filesToDownload = failedFiles
         saveNodeFile(localPath, nodeData)
         globalState.processedDirs++
@@ -1587,15 +1307,8 @@ exports.init = api => {
         saveGlobalSyncState(targetRoot, globalState)
         let totalPending = failedFiles.length
         for (const childName of nodeData.childrenNames) {
-          if (shouldStopFn?.()) {
-            globalState.state = 'paused'
-            saveGlobalSyncState(targetRoot, globalState)
-            return { pendingCount: totalPending, failedFiles: [...failedFiles], interrupted: true }
-          }
-          const childResult = await syncDirectory(
-            (!remotePath || remotePath === '/' ? '' : remotePath + '/') + childName,
-            path.join(localPath, childName)
-          )
+          if (shouldStopFn?.()) { globalState.state = 'paused'; saveGlobalSyncState(targetRoot, globalState); return { pendingCount: totalPending, failedFiles: [...failedFiles], interrupted: true } }
+          const childResult = await syncDirectory((!remotePath || remotePath === '/' ? '' : remotePath + '/') + childName, path.join(localPath, childName))
           totalPending += childResult.pendingCount
           if (childResult.interrupted) return { pendingCount: totalPending, failedFiles: [...failedFiles], interrupted: true }
         }
@@ -1609,16 +1322,10 @@ exports.init = api => {
       }
     }
     const result = await syncDirectory('', targetRoot)
-    if (result.interrupted) {
-      globalState.state = 'paused'
-    } else {
-      globalState.state = 'completed'
-      globalState.syncEndTime = new Date().toISOString()
-      targetLastScanTime[targetName] = Date.now()
-      if (target.enableSlimeMold) {
-        let network = loadSlimeNetwork(targetRoot)
-        if (network) saveSlimeNetwork(targetRoot, resetSlimeCycle(network))
-      }
+    if (result.interrupted) { globalState.state = 'paused' }
+    else {
+      globalState.state = 'completed'; globalState.syncEndTime = new Date().toISOString(); targetLastScanTime[targetName] = Date.now()
+      if (target.enableSlimeMold) { let network = loadSlimeNetwork(targetRoot); if (network) saveSlimeNetwork(targetRoot, resetSlimeCycle(network)) }
     }
     saveGlobalSyncState(targetRoot, globalState)
     logDebug(`[sync] [${targetName}] ${globalState.state} (${globalState.downloadedFiles}/${globalState.totalFiles} files)`)
@@ -1639,17 +1346,9 @@ exports.init = api => {
       if (diskCheck.exists) try { fs.unlinkSync(failedFile.localPath) } catch (e) {}
       try {
         const apiUrl = new URL(target.remoteAddress)
-        if (!await checkServerAvailable(apiUrl, target.username, target.password)) {
-          remainingFiles.push(failedFile)
-          continue
-        }
+        if (!await checkServerAvailable(apiUrl, target.username, target.password)) { remainingFiles.push(failedFile); continue }
         await downloadWithAria2(buildDownloadUrl(target.remoteAddress, failedFile.remotePath), failedFile.localPath, targetName, target.username, target.password, failedFile.mtime, failedFile.ctime)
-      } catch (error) {
-        failedFile.attempts++
-        failedFile.error = error.message?.substring(0, 100) || 'Unknown'
-        failedFile.timestamp = new Date().toISOString()
-        remainingFiles.push(failedFile)
-      }
+      } catch (error) { failedFile.attempts++; failedFile.error = error.message?.substring(0, 100) || 'Unknown'; failedFile.timestamp = new Date().toISOString(); remainingFiles.push(failedFile) }
     }
     failedQueue.files = remainingFiles
     saveFailedQueue(targetRoot, targetName, failedQueue)
@@ -1659,12 +1358,8 @@ exports.init = api => {
     if (!api.getConfig('enableScheduledSync')) { isInScheduledWindow = false; return }
     const nowInWindow = isWithinScheduledWindow()
     const now = Date.now()
-    if (nowInWindow !== isInScheduledWindow) {
-      isInScheduledWindow = nowInWindow
-      lastWindowLogTime = now
-    } else if (!nowInWindow && (now - lastWindowLogTime) >= WINDOW_LOG_INTERVAL) {
-      lastWindowLogTime = now
-    }
+    if (nowInWindow !== isInScheduledWindow) { isInScheduledWindow = nowInWindow; lastWindowLogTime = now }
+    else if (!nowInWindow && (now - lastWindowLogTime) >= WINDOW_LOG_INTERVAL) { lastWindowLogTime = now }
   }
 
   const saveCheckpoint = () => {
@@ -1688,28 +1383,16 @@ exports.init = api => {
   }
 
   const runSync = async () => {
-    if (!api.getConfig('enableSync')) {
-      logDebug('[sync] Sync is disabled')
-      return
-    }
-    if (api.getConfig('enableScheduledSync') && !isWithinScheduledWindow()) {
-      logDebug('[sync] Outside scheduled window')
-      return
-    }
-    if (isSyncing) {
-      logDebug('[sync] Already syncing')
-      return
-    }
+    if (!api.getConfig('enableSync')) { logDebug('[sync] Sync is disabled'); return }
+    if (api.getConfig('enableScheduledSync') && !isWithinScheduledWindow()) { logDebug('[sync] Outside scheduled window'); return }
+    if (isSyncing) { logDebug('[sync] Already syncing'); return }
     shouldStopSync = false
     isSyncing = true
     syncStartTime = Date.now()
     try {
       const syncTargets = api.getConfig('syncTargets') || []
       const enabledTargets = syncTargets.filter(t => t.enabled !== false && t.localDestination && t.remoteAddress)
-      if (enabledTargets.length === 0) {
-        logDebug('[sync] No enabled targets with valid configuration')
-        return
-      }
+      if (enabledTargets.length === 0) { logDebug('[sync] No enabled targets with valid configuration'); return }
       logDebug(`[sync] Cycle start - ${enabledTargets.length} targets`)
       for (const target of enabledTargets) {
         if (shouldStopSync || (api.getConfig('enableScheduledSync') && !isWithinScheduledWindow())) break
@@ -1719,20 +1402,44 @@ exports.init = api => {
         if (!hasIncompleteSync && !shouldScanTarget(target)) continue
         if (!fs.existsSync(targetRoot)) fs.mkdirSync(targetRoot, { recursive: true })
         const apiUrl = new URL(target.remoteAddress)
-        if (!await checkServerAvailable(apiUrl, target.username, target.password)) {
-          logDebug(`[sync] [${target.name}] Server unavailable`)
-          continue
-        }
+        if (!await checkServerAvailable(apiUrl, target.username, target.password)) { logDebug(`[sync] [${target.name}] Server unavailable`); continue }
         await processTarget(target, targetRoot, () => shouldStopSync || (api.getConfig('enableScheduledSync') && !isWithinScheduledWindow()))
       }
       logDebug(`[sync] Cycle completed in ${((Date.now() - syncStartTime) / 1000).toFixed(1)}s`)
-    } catch (err) {
-      logError(`Sync failed: ${err.message}`)
-    } finally {
-      isSyncing = false
-      shouldStopSync = false
-      if (global.gc) global.gc()
-    }
+    } catch (err) { logError(`Sync failed: ${err.message}`) }
+    finally { isSyncing = false; shouldStopSync = false; if (global.gc) global.gc() }
+  }
+
+// ========== 黏菌突觸：訪問加熱黏菌熱度 ==========
+
+const triggerSynapse = (target, targetRoot) => {
+  if (!target.enableSlimeMold) return  // 黏菌未開啟則跳過
+  
+  const targetName = target.name
+  const baseIntervalDays = target.syncInterval !== undefined ? target.syncInterval : 3
+  
+  let network = loadSlimeNetwork(targetRoot)
+  if (!network) {
+    network = createSlimeNetwork(targetName, targetRoot, baseIntervalDays)
+  }
+  
+  // 加熱根目錄熱度
+  let rootNode = loadSlimeNode(targetRoot) || createSlimeNode(targetRoot, '/', baseIntervalDays)
+  rootNode.changeStats.totalFiles = Math.max(rootNode.changeStats.totalFiles || 1, 10)
+  updateSlimeHeat(rootNode, 25, network)  // 注入變更計數加熱
+  saveSlimeNode(targetRoot, rootNode)
+  updateSlimeNetwork(network, '/', 25, rootNode.changeStats.totalFiles)
+  saveSlimeNetwork(targetRoot, network)
+  
+  logDebug(`[synapse] [${targetName}] Heated slime mold (heat: ${rootNode.heat})`)
+}
+
+  const canTriggerSynapse = (target) => {
+    if (target.enableSynapse === false) return false
+    const now = Date.now()
+    const cooldownMs = (target.synapseCooldown || 5) * 60 * 1000
+    if (!synapseCooldowns[target.name]) synapseCooldowns[target.name] = 0
+    return (now - synapseCooldowns[target.name]) >= cooldownMs
   }
 
   const checkSync = async () => {
@@ -1741,55 +1448,39 @@ exports.init = api => {
     if (api.getConfig('enableScheduledSync')) {
       if (isWithinScheduledWindow()) await runSync()
       else if (isSyncing) shouldStopSync = true
-    } else {
-      await runSync()
-    }
+    } else { await runSync() }
   }
 
   initTargetScanTimes()
 
   syncTimer = api.setInterval(() => checkSync().catch(() => {}), 5 * 60 * 1000)
   scheduledSyncTimer = api.setInterval(() => { if (api.getConfig('enableScheduledSync')) checkScheduledWindow() }, 60 * 1000)
-  windowCheckTimer = api.setInterval(() => {
-    if (api.getConfig('enableScheduledSync') && isSyncing && !isWithinScheduledWindow()) shouldStopSync = true
-  }, 30 * 1000)
+  windowCheckTimer = api.setInterval(() => { if (api.getConfig('enableScheduledSync') && isSyncing && !isWithinScheduledWindow()) shouldStopSync = true }, 30 * 1000)
   checkpointTimer = api.setInterval(saveCheckpoint, DEFAULT_CHECKPOINT_INTERVAL * 1000)
   slimeMoldCheckTimer = api.setInterval(() => runSlimeMoldChecks().catch(() => {}), SLIME_MOLD_CHECK_INTERVAL)
-  const compensationInterval = (api.getConfig('synapseCompensationInterval') || 60) * 1000
-  synapseCompensationTimer = api.setInterval(() => runSynapseCompensation().catch(() => {}), compensationInterval)
 
-  if (api.getConfig('enableSync')) {
-    setTimeout(() => runSync().catch(() => {}), 3000)
-  }
+  if (api.getConfig('enableSync')) setTimeout(() => runSync().catch(() => {}), 3000)
 
   return {
     unload() {
       saveCheckpoint()
-      // 清理所有待處理的突觸觸發
-      for (const key in pendingSynapseTriggers) {
-        if (pendingSynapseTriggers[key]?.timer) clearTimeout(pendingSynapseTriggers[key].timer)
-        delete pendingSynapseTriggers[key]
-      }
+      for (const key in pendingSynapseTriggers) { if (pendingSynapseTriggers[key]?.timer) clearTimeout(pendingSynapseTriggers[key].timer); delete pendingSynapseTriggers[key] }
       if (syncTimer) { clearInterval(syncTimer); syncTimer = null }
       if (scheduledSyncTimer) { clearInterval(scheduledSyncTimer); scheduledSyncTimer = null }
       if (windowCheckTimer) { clearInterval(windowCheckTimer); windowCheckTimer = null }
       if (checkpointTimer) { clearInterval(checkpointTimer); checkpointTimer = null }
       if (slimeMoldCheckTimer) { clearInterval(slimeMoldCheckTimer); slimeMoldCheckTimer = null }
-      if (synapseCompensationTimer) { clearInterval(synapseCompensationTimer); synapseCompensationTimer = null }
     },
 
-    // ========== 黏菌突觸中間件 ==========
+    // ========== 突觸中間件 ==========
     middleware: (ctx) => {
       return () => {
         if (!api.getConfig('enableSync')) return
-
         const syncTargets = api.getConfig('syncTargets') || []
         if (syncTargets.length === 0) return
 
         let realPath = ''
-        if (ctx.vfsNode && ctx.vfsNode.source) {
-          realPath = ctx.vfsNode.source
-        }
+        if (ctx.vfsNode && ctx.vfsNode.source) realPath = ctx.vfsNode.source
         if (!realPath) {
           const file = ctx.state?.fileSource || ctx.fileSource
           if (file) {
@@ -1801,17 +1492,29 @@ exports.init = api => {
         if (!realPath) return
 
         const normalizedPath = path.normalize(realPath).replace(/\\/g, '/')
+        const mergeWindowMs = (api.getConfig('synapseMergeWindow') || 3) * 1000
 
         for (const target of syncTargets) {
           if (target.enabled === false || target.enableSynapse === false) continue
           if (!target.localDestination) continue
 
           const targetRoot = path.normalize(target.localDestination).replace(/\\/g, '/')
+          if (!normalizedPath.startsWith(targetRoot)) continue
 
-          if (normalizedPath.startsWith(targetRoot)) {
-            triggerSynapseScan(target, target.localDestination, normalizedPath).catch(() => {})
-            break
-          }
+          const targetName = target.name
+          if (!pendingSynapseTriggers[targetName]) pendingSynapseTriggers[targetName] = { timer: null }
+          const pending = pendingSynapseTriggers[targetName]
+
+          if (pending.timer) break  // 已有待處理，跳過
+          if (!canTriggerSynapse(target)) break  // 冷卻中，跳過
+
+          pending.timer = setTimeout(() => {
+            pending.timer = null
+            synapseCooldowns[targetName] = Date.now()
+            delete pendingSynapseTriggers[targetName]
+            triggerSynapse(target, targetRoot)
+          }, mergeWindowMs)
+          break
         }
       }
     },
@@ -1831,13 +1534,13 @@ exports.init = api => {
           enableScheduledSync: api.getConfig('enableScheduledSync'),
           isInScheduledWindow,
           isSyncing,
-          synapseMergeWindow: api.getConfig('synapseMergeWindow') || 2,
-          synapseCompensationInterval: api.getConfig('synapseCompensationInterval') || 60,
           targets: syncTargets.map(target => {
             const globalState = target.localDestination ? loadGlobalSyncState(target.localDestination) : null
             const lastScan = targetLastScanTime[target.name] || 0
             const intervalDays = target.syncInterval !== undefined ? target.syncInterval : 3
-            const synapseCheck = canTriggerSynapse(target)
+            const now = Date.now()
+            const cooldownMs = (target.synapseCooldown || 5) * 60 * 1000
+            const lastSynapse = synapseCooldowns[target.name] || 0
             return {
               name: target.name,
               enabled: target.enabled !== false,
@@ -1846,23 +1549,10 @@ exports.init = api => {
               lastScan: lastScan > 0 ? new Date(lastScan).toISOString() : 'Never',
               state: globalState?.state || 'idle',
               slimeMoldEnabled: target.enableSlimeMold || false,
-              synapse: {
-                enabled: target.enableSynapse !== false,
-                cooldownMinutes: target.synapseCooldown || 5,
-                canTrigger: synapseCheck.allowed,
-                cooldownRemainingSeconds: Math.ceil(synapseCheck.remainingMs / 1000),
-                lastTriggered: synapseCooldowns[target.name]
-                  ? new Date(synapseCooldowns[target.name]).toISOString()
-                  : 'Never',
-                pendingCompensations: (pendingSynapsePaths[target.name]?.size || 0),
-                pendingMerged: pendingSynapseTriggers[target.name] ? pendingSynapseTriggers[target.name].paths.size : 0
-              },
-              progress: globalState ? {
-                processedDirs: globalState.processedDirs,
-                totalDirs: globalState.totalDirs,
-                downloadedFiles: globalState.downloadedFiles,
-                totalFiles: globalState.totalFiles
-              } : null
+              synapseEnabled: target.enableSynapse !== false,
+              synapseCooldownMinutes: target.synapseCooldown || 5,
+              synapseReady: (now - lastSynapse) >= cooldownMs,
+              progress: globalState ? { processedDirs: globalState.processedDirs, totalDirs: globalState.totalDirs, downloadedFiles: globalState.downloadedFiles, totalFiles: globalState.totalFiles } : null
             }
           })
         }
@@ -1878,40 +1568,24 @@ exports.init = api => {
         const target = (api.getConfig('syncTargets') || []).find(t => t.name === targetName)
         if (!target?.localDestination) return { error: 'Target not found' }
         const network = loadSlimeNetwork(target.localDestination)
-        const synapseCheck = canTriggerSynapse(target)
-        const baseResult = {
-          target: targetName,
-          slimeMoldEnabled: false,
-          synapse: {
-            enabled: target.enableSynapse !== false,
-            cooldownMinutes: target.synapseCooldown || 5,
-            canTrigger: synapseCheck.allowed,
-            cooldownRemainingSeconds: Math.ceil(synapseCheck.remainingMs / 1000),
-            lastTriggered: synapseCooldowns[targetName]
-              ? new Date(synapseCooldowns[targetName]).toISOString()
-              : 'Never',
-            pendingCompensations: (pendingSynapsePaths[targetName]?.size || 0)
-          }
-        }
-        if (!network) return baseResult
-        const decayRate = calculateDecayRate(network.syncIntervalDays || 3, SLIME_MOLD_CHECK_INTERVAL)
         const now = Date.now()
+        const cooldownMs = (target.synapseCooldown || 5) * 60 * 1000
+        const lastSynapse = synapseCooldowns[targetName] || 0
+        if (!network) return { target: targetName, slimeMoldEnabled: false, synapseEnabled: target.enableSynapse !== false, synapseCooldownMinutes: target.synapseCooldown || 5, synapseReady: (now - lastSynapse) >= cooldownMs }
+        const decayRate = calculateDecayRate(network.syncIntervalDays || 3, SLIME_MOLD_CHECK_INTERVAL)
         return {
-          ...baseResult,
+          target: targetName,
           slimeMoldEnabled: true,
+          synapseEnabled: target.enableSynapse !== false,
+          synapseCooldownMinutes: target.synapseCooldown || 5,
+          synapseReady: (now - lastSynapse) >= cooldownMs,
           syncIntervalDays: network.syncIntervalDays || 3,
           decayRate: parseFloat(decayRate.toFixed(6)),
           extraScansThisCycle: network.extraScansThisCycle,
           maxExtraScansPerCycle: MAX_EXTRA_SCANS_PER_CYCLE,
           hotPaths: network.hotPaths.slice(0, 10).map(hotPath => {
             const node = loadSlimeNode(path.join(target.localDestination, hotPath))
-            const currentHeat = node ? decayHeatByTime(node, network, now) : 0
-            return {
-              path: hotPath,
-              heat: parseFloat(currentHeat.toFixed(2)),
-              changeRate: node?.changeStats?.changeRate || 0,
-              lastChange: node?.changeStats?.lastChange || null
-            }
+            return { path: hotPath, heat: parseFloat((node ? decayHeatByTime(node, network, now) : 0).toFixed(2)), changeRate: node?.changeStats?.changeRate || 0, lastChange: node?.changeStats?.lastChange || null }
           })
         }
       },
@@ -1922,13 +1596,8 @@ exports.init = api => {
         const targetRoot = target.localDestination
         targetLastScanTime[targetName] = 0
         synapseCooldowns[targetName] = 0
-        if (pendingSynapsePaths[targetName]) delete pendingSynapsePaths[targetName]
-        if (pendingSynapseTriggers[targetName]) {
-          if (pendingSynapseTriggers[targetName].timer) clearTimeout(pendingSynapseTriggers[targetName].timer)
-          delete pendingSynapseTriggers[targetName]
-        }
-        ;[getNodeFilePath(targetRoot), getGlobalStatePath(targetRoot),
-          getFailedQueuePath(targetRoot, targetName), getSlimeNetworkPath(targetRoot)].forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p) })
+        if (pendingSynapseTriggers[targetName]) { if (pendingSynapseTriggers[targetName].timer) clearTimeout(pendingSynapseTriggers[targetName].timer); delete pendingSynapseTriggers[targetName] }
+        ;[getNodeFilePath(targetRoot), getGlobalStatePath(targetRoot), getIndexFilePath(targetRoot, targetName), getFailedQueuePath(targetRoot, targetName), getSlimeNetworkPath(targetRoot)].forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p) })
         return { message: `Reset completed for ${targetName}` }
       },
 
@@ -1940,9 +1609,7 @@ exports.init = api => {
           if (!await checkServerAvailable(apiUrl, target.username, target.password)) return { error: 'Server unavailable' }
           const fileList = await getRemoteFileList(`${apiUrl.protocol}//${apiUrl.host}/~/api/get_file_list?uri=${encodeURIComponent(apiUrl.pathname)}`, target.name, target.username, target.password)
           return { success: true, target: targetName, files: fileList.filter(i => !i.n?.endsWith('/')).length, dirs: fileList.filter(i => i.n?.endsWith('/')).length }
-        } catch (error) {
-          return { error: error.message }
-        }
+        } catch (error) { return { error: error.message } }
       }
     }
   }
