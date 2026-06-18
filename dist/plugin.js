@@ -133,7 +133,7 @@ exports.config = {
         type: 'boolean',
         defaultValue: true,
         label: 'Enable Slime Synapse',
-        helperText: 'Trigger full sync when frontend accesses files in this target.',
+        helperText: 'Heat slime mold when frontend accesses files in this target.',
         xs: 6
       },
       synapseCooldown: {
