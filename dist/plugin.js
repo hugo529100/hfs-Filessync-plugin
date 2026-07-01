@@ -1,5 +1,5 @@
-exports.version = 6.2
-exports.description = "Sync folders from remote HFS3 server (Dual-list verification sync with distributed manifests and slime mold optimization)"
+exports.version = 6.4
+exports.description = "Sync folders from remote HFS3 servers with dual-list verification, incremental download, and optional slime mold optimization for dynamic scan scheduling. Supports scheduled windows, priority downloads, filters, checkpoint resume, and access-triggered heating."
 exports.apiRequired = 10
 exports.repo = "Hug3O/Filessync-plugin"
 
@@ -23,6 +23,7 @@ exports.config = {
     defaultValue: '00:30',
     label: 'Sync Start Time',
     helperText: 'Start time for sync (HH:MM format, e.g., 00:30 for 12:30 AM)',
+    showIf: x => x.enableScheduledSync,
     xs: 6,
     when: config => config.enableScheduledSync === true
   },
@@ -31,6 +32,7 @@ exports.config = {
     defaultValue: '08:30',
     label: 'Sync End Time',
     helperText: 'End time for sync (HH:MM format, e.g., 08:30 for 8:30 AM)',
+    showIf: x => x.enableScheduledSync,
     xs: 6,
     when: config => config.enableScheduledSync === true
   },
@@ -126,7 +128,7 @@ exports.config = {
         type: 'boolean',
         defaultValue: false,
         label: 'Enable Slime Mold Optimization',
-        helperText: 'Use slime mold algorithm to dynamically adjust scan frequency based on file change patterns.',
+        helperText: 'Dynamically adjusts scan frequency based on file change patterns. Continuously writes small .slime_mold.json files and performs lightweight remote checks — may slightly increase server load and disk I/O. The scan rhythm is governed by the global "Slime Mold Check Interval" setting.',
         xs: 6
       },
       enableSynapse: {
@@ -134,27 +136,21 @@ exports.config = {
         defaultValue: true,
         label: 'Enable Slime Synapse',
         helperText: 'Heat slime mold when frontend accesses files in this target.',
-        xs: 6
+        showIf: x => x.enableSlimeMold,
+        xs: 6,
+        when: config => config.enableSlimeMold === true
       },
       synapseCooldown: {
         type: 'number',
         label: 'Synapse Cooldown (minutes)',
-        defaultValue: 30,
+        defaultValue: 10,
         helperText: 'Minimum time between synapse-triggered syncs (1-60 minutes)',
+        showIf: x => x.enableSlimeMold,
         xs: 6,
         min: 1,
         max: 60
       }
     }
-  },
-  synapseMergeWindow: {
-    type: 'number',
-    label: 'Synapse Merge Window (seconds)',
-    defaultValue: 3,
-    helperText: 'Merge multiple access requests within this window into a single sync trigger (1-10 seconds)',
-    xs: 6,
-    min: 1,
-    max: 10
   },
   aria2Path: {
     type: 'real_path',
@@ -216,6 +212,24 @@ exports.config = {
     min: 1,
     max: 300
   },
+    checkpointInterval: {
+    type: 'number',
+    label: 'Checkpoint Interval (seconds)',
+    defaultValue: 30,
+    helperText: 'How often to save sync progress checkpoint. Lower values = better resume capability but more disk writes.',
+    xs: 6,
+    min: 20,
+    max: 600
+  },
+    slimeMoldCheckInterval: {
+    type: 'number',
+    label: 'Slime Mold Check Interval (seconds)',
+    defaultValue: 300,
+    helperText: 'How often the slime mold algorithm checks heat levels and decides on extra scans. Lower values = more responsive but more disk I/O.',
+    xs: 6,
+    min: 10,
+    max: 6000
+  },
   debug: {
     type: 'boolean',
     defaultValue: false,
@@ -228,6 +242,7 @@ exports.config = {
     defaultValue: false,
     label: 'Verbose Debug',
     helperText: 'Show per-directory sync status',
+    showIf: x => x.debug,
     xs: 6,
     when: config => config.debug === true
   }
@@ -264,13 +279,22 @@ exports.init = api => {
   const SLIME_MOLD_FILE = '.slime_mold.json'
   const SLIME_NETWORK_FILE = '.slime_network.json'
 
-  const DEFAULT_CHECKPOINT_INTERVAL = 30
+  const SYNAPSE_MERGE_WINDOW_MS = 5000  // 內置固化 5 秒
   const DEFAULT_TIMESTAMP_TOLERANCE = 2
-  const SLIME_MOLD_CHECK_INTERVAL = 10 * 1000
   const MAX_EXTRA_SCANS_PER_CYCLE = 5
   const MAX_HEAT_HISTORY = 20
   const MIN_HEAT_FOR_ACTION = 15
   const DECAY_MINIMUM = 0.1
+
+  const getSlimeMoldCheckIntervalMs = () => {
+    const sec = api.getConfig('slimeMoldCheckInterval')
+    return (sec && sec >= 10 && sec <= 600) ? sec * 1000 : 60 * 1000
+  }
+
+  const getCheckpointIntervalMs = () => {
+    const sec = api.getConfig('checkpointInterval')
+    return (sec && sec >= 30 && sec <= 600) ? sec * 1000 : 120 * 1000
+  }
 
   const SIZE_ONLY_EXTENSIONS = new Set([
     'mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'mpg', 'mpeg', '3gp', '3g2', 'ogv', 'ts', 'vob', 'rm', 'rmvb',
@@ -317,9 +341,9 @@ exports.init = api => {
   const getGlobalStatePath = (targetRoot) => path.join(targetRoot, GLOBAL_STATE_FILE)
   const getSlimeMoldPath = (dirPath) => path.join(dirPath, SLIME_MOLD_FILE)
   const getSlimeNetworkPath = (targetRoot) => path.join(targetRoot, SLIME_NETWORK_FILE)
-  
+
   const isSyncMetaFile = (filename) => {
-    return filename === NODE_FILE || filename.startsWith(FAILED_FILE_PREFIX) || 
+    return filename === NODE_FILE || filename.startsWith(FAILED_FILE_PREFIX) ||
            filename.startsWith('.sync_') || filename === GLOBAL_STATE_FILE ||
            filename === SLIME_MOLD_FILE || filename === SLIME_NETWORK_FILE
   }
@@ -432,9 +456,9 @@ exports.init = api => {
     now = now || Date.now()
     if (!nodeData.lastUpdated) return nodeData.heat
     const syncIntervalDays = nodeData.syncIntervalDays || (network ? network.syncIntervalDays : 3)
-    const decayRate = calculateDecayRate(syncIntervalDays, SLIME_MOLD_CHECK_INTERVAL)
+    const decayRate = calculateDecayRate(syncIntervalDays, getSlimeMoldCheckIntervalMs())
     const lastUpdated = new Date(nodeData.lastUpdated).getTime()
-    const elapsedChecks = Math.floor((now - lastUpdated) / SLIME_MOLD_CHECK_INTERVAL)
+    const elapsedChecks = Math.floor((now - lastUpdated) / getSlimeMoldCheckIntervalMs())
     if (elapsedChecks <= 0) return nodeData.heat
     const decayedHeat = nodeData.heat * Math.pow(decayRate, elapsedChecks)
     return Math.max(DECAY_MINIMUM, parseFloat(decayedHeat.toFixed(4)))
@@ -695,7 +719,7 @@ exports.init = api => {
       const localPath = relativePath ? path.join(targetRoot, relativePath) : targetRoot
       const baseIntervalDays = target.syncInterval !== undefined ? target.syncInterval : 3
       let slimeNode = loadSlimeNode(localPath) || createSlimeNode(localPath, relativePath || '/', baseIntervalDays)
-      const changeCount = comparison.summary.filesToAdd + comparison.summary.filesToUpdate + 
+      const changeCount = comparison.summary.filesToAdd + comparison.summary.filesToUpdate +
                           comparison.summary.filesToRemove + (comparison.summary.filesToFixTimestamp || 0)
       const totalFiles = Object.keys(nodeData?.remoteList?.files || comparison?.remoteList?.files || {}).length
       slimeNode.changeStats.totalFiles = totalFiles
@@ -1413,24 +1437,23 @@ exports.init = api => {
 // ========== 黏菌突觸：訪問加熱黏菌熱度 ==========
 
 const triggerSynapse = (target, targetRoot) => {
-  if (!target.enableSlimeMold) return  // 黏菌未開啟則跳過
-  
+  if (!target.enableSlimeMold) return
+
   const targetName = target.name
   const baseIntervalDays = target.syncInterval !== undefined ? target.syncInterval : 3
-  
+
   let network = loadSlimeNetwork(targetRoot)
   if (!network) {
     network = createSlimeNetwork(targetName, targetRoot, baseIntervalDays)
   }
-  
-  // 加熱根目錄熱度
+
   let rootNode = loadSlimeNode(targetRoot) || createSlimeNode(targetRoot, '/', baseIntervalDays)
   rootNode.changeStats.totalFiles = Math.max(rootNode.changeStats.totalFiles || 1, 10)
-  updateSlimeHeat(rootNode, 25, network)  // 注入變更計數加熱
+  updateSlimeHeat(rootNode, 25, network)
   saveSlimeNode(targetRoot, rootNode)
   updateSlimeNetwork(network, '/', 25, rootNode.changeStats.totalFiles)
   saveSlimeNetwork(targetRoot, network)
-  
+
   logDebug(`[synapse] [${targetName}] Heated slime mold (heat: ${rootNode.heat})`)
 }
 
@@ -1456,8 +1479,16 @@ const triggerSynapse = (target, targetRoot) => {
   syncTimer = api.setInterval(() => checkSync().catch(() => {}), 5 * 60 * 1000)
   scheduledSyncTimer = api.setInterval(() => { if (api.getConfig('enableScheduledSync')) checkScheduledWindow() }, 60 * 1000)
   windowCheckTimer = api.setInterval(() => { if (api.getConfig('enableScheduledSync') && isSyncing && !isWithinScheduledWindow()) shouldStopSync = true }, 30 * 1000)
-  checkpointTimer = api.setInterval(saveCheckpoint, DEFAULT_CHECKPOINT_INTERVAL * 1000)
-  slimeMoldCheckTimer = api.setInterval(() => runSlimeMoldChecks().catch(() => {}), SLIME_MOLD_CHECK_INTERVAL)
+  const hasAnySlimeMoldTarget = (api.getConfig('syncTargets') || []).some(
+    t => t.enabled !== false && t.enableSlimeMold
+  )
+
+  if (hasAnySlimeMoldTarget) {
+    slimeMoldCheckTimer = api.setInterval(
+      () => runSlimeMoldChecks().catch(() => {}), getSlimeMoldCheckIntervalMs()
+    )
+    checkpointTimer = api.setInterval(saveCheckpoint, getCheckpointIntervalMs())
+  }
 
   if (api.getConfig('enableSync')) setTimeout(() => runSync().catch(() => {}), 3000)
 
@@ -1472,7 +1503,6 @@ const triggerSynapse = (target, targetRoot) => {
       if (slimeMoldCheckTimer) { clearInterval(slimeMoldCheckTimer); slimeMoldCheckTimer = null }
     },
 
-    // ========== 突觸中間件 ==========
     middleware: (ctx) => {
       return () => {
         if (!api.getConfig('enableSync')) return
@@ -1492,7 +1522,6 @@ const triggerSynapse = (target, targetRoot) => {
         if (!realPath) return
 
         const normalizedPath = path.normalize(realPath).replace(/\\/g, '/')
-        const mergeWindowMs = (api.getConfig('synapseMergeWindow') || 3) * 1000
 
         for (const target of syncTargets) {
           if (target.enabled === false || target.enableSynapse === false) continue
@@ -1505,15 +1534,15 @@ const triggerSynapse = (target, targetRoot) => {
           if (!pendingSynapseTriggers[targetName]) pendingSynapseTriggers[targetName] = { timer: null }
           const pending = pendingSynapseTriggers[targetName]
 
-          if (pending.timer) break  // 已有待處理，跳過
-          if (!canTriggerSynapse(target)) break  // 冷卻中，跳過
+          if (pending.timer) break
+          if (!canTriggerSynapse(target)) break
 
           pending.timer = setTimeout(() => {
             pending.timer = null
             synapseCooldowns[targetName] = Date.now()
             delete pendingSynapseTriggers[targetName]
             triggerSynapse(target, targetRoot)
-          }, mergeWindowMs)
+          }, SYNAPSE_MERGE_WINDOW_MS)
           break
         }
       }
@@ -1572,7 +1601,7 @@ const triggerSynapse = (target, targetRoot) => {
         const cooldownMs = (target.synapseCooldown || 5) * 60 * 1000
         const lastSynapse = synapseCooldowns[targetName] || 0
         if (!network) return { target: targetName, slimeMoldEnabled: false, synapseEnabled: target.enableSynapse !== false, synapseCooldownMinutes: target.synapseCooldown || 5, synapseReady: (now - lastSynapse) >= cooldownMs }
-        const decayRate = calculateDecayRate(network.syncIntervalDays || 3, SLIME_MOLD_CHECK_INTERVAL)
+        const decayRate = calculateDecayRate(network.syncIntervalDays || 3, getSlimeMoldCheckIntervalMs())
         return {
           target: targetName,
           slimeMoldEnabled: true,
