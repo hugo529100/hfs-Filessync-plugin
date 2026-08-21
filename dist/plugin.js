@@ -1,9 +1,16 @@
-exports.version = 6.4
+exports.version = 6.5
 exports.description = "Sync folders from remote HFS3 servers with dual-list verification, incremental download, and optional slime mold optimization for dynamic scan scheduling. Supports scheduled windows, priority downloads, filters, checkpoint resume, and access-triggered heating."
 exports.apiRequired = 10
 exports.repo = "Hug3O/Filessync-plugin"
 
 exports.config = {
+    aria2Path: {
+    type: 'real_path',
+    fileMask: 'aria2c.exe',
+    defaultValue: 'aria2c.exe',
+    label: 'Aria2c Path',
+    helperText: 'Path to aria2c executable.'
+  },
   enableSync: {
     type: 'boolean',
     defaultValue: false,
@@ -36,6 +43,9 @@ exports.config = {
     xs: 6,
     when: config => config.enableScheduledSync === true
   },
+
+
+
   syncTargets: {
     type: 'array',
     label: 'Sync Targets',
@@ -123,42 +133,12 @@ exports.config = {
         defaultValue: 'cache,temp,node_modules,.git,.svn,__pycache__',
         helperText: 'Comma-separated folder names to exclude',
         xs: 6
-      },
-      enableSlimeMold: {
-        type: 'boolean',
-        defaultValue: false,
-        label: 'Enable Slime Mold Optimization',
-        helperText: 'Dynamically adjusts scan frequency based on file change patterns. Continuously writes small .slime_mold.json files and performs lightweight remote checks — may slightly increase server load and disk I/O. The scan rhythm is governed by the global "Slime Mold Check Interval" setting.',
-        xs: 6
-      },
-      enableSynapse: {
-        type: 'boolean',
-        defaultValue: true,
-        label: 'Enable Slime Synapse',
-        helperText: 'Heat slime mold when frontend accesses files in this target.',
-        showIf: x => x.enableSlimeMold,
-        xs: 6,
-        when: config => config.enableSlimeMold === true
-      },
-      synapseCooldown: {
-        type: 'number',
-        label: 'Synapse Cooldown (minutes)',
-        defaultValue: 10,
-        helperText: 'Minimum time between synapse-triggered syncs (1-60 minutes)',
-        showIf: x => x.enableSlimeMold,
-        xs: 6,
-        min: 1,
-        max: 60
       }
+
     }
   },
-  aria2Path: {
-    type: 'real_path',
-    fileMask: 'aria2c.exe',
-    defaultValue: 'aria2c.exe',
-    label: 'Aria2c Path',
-    helperText: 'Path to aria2c executable.'
-  },
+
+
   exploreConcurrency: {
     type: 'number',
     label: 'Explore Concurrency',
@@ -212,32 +192,79 @@ exports.config = {
     min: 1,
     max: 300
   },
-    checkpointInterval: {
+  checkpointInterval: {
     type: 'number',
     label: 'Checkpoint Interval (seconds)',
     defaultValue: 30,
     helperText: 'How often to save sync progress checkpoint. Lower values = better resume capability but more disk writes.',
-    xs: 6,
     min: 20,
     max: 600
   },
-    slimeMoldCheckInterval: {
+    // ========== 全局挂载探测配置 ==========
+  mountProbeThreshold: {
+    type: 'number',
+    defaultValue: 80,
+    label: 'Mount Probe Threshold (%)',
+    helperText: 'Percentage of empty probe paths required to trigger unmount detection (50-100). Lower = more sensitive.',
+    xs: 6,
+    min: 50,
+    max: 100
+  },
+  mountProbeMinPaths: {
+    type: 'number',
+    defaultValue: 3,
+    label: 'Min Probe Paths',
+    helperText: 'Minimum number of paths to probe before making a decision (2-10).',
+    xs: 6,
+    min: 2,
+    max: 10
+  },
+
+
+  // ========== 全局黏菌配置 ==========
+  enableSlimeMold: {
+    type: 'boolean',
+    defaultValue: false,
+    label: 'Enable Slime Mold Optimization',
+    helperText: 'Dynamically adjusts scan frequency based on file change patterns. Continuously writes small .slime_mold.json files and performs lightweight remote checks — may slightly increase server load and disk I/O. The scan rhythm is governed by the global "Slime Mold Check Interval" setting.',
+  },
+  enableSynapse: {
+    type: 'boolean',
+    defaultValue: true,
+    label: 'Enable Slime Synapse',
+    helperText: 'Heat slime mold when frontend accesses files in any target.',
+    showIf: x => x.enableSlimeMold, 
+    when: config => config.enableSlimeMold === true
+  },
+  synapseCooldown: {
+    type: 'number',
+    label: 'Synapse Cooldown (minutes)',
+    defaultValue: 10,
+    helperText: 'Minimum time between synapse-triggered syncs (1-60 minutes)',
+    showIf: x => x.enableSlimeMold,
+    xs: 6,
+    min: 1,
+    max: 60,
+    when: config => config.enableSlimeMold === true
+  },
+  slimeMoldCheckInterval: {
     type: 'number',
     label: 'Slime Mold Check Interval (seconds)',
     defaultValue: 300,
     helperText: 'How often the slime mold algorithm checks heat levels and decides on extra scans. Lower values = more responsive but more disk I/O.',
     xs: 6,
     min: 10,
-    max: 6000
+    max: 6000,
+    showIf: x => x.enableSlimeMold,
+    when: config => config.enableSlimeMold === true
   },
-  debug: {
+    debug: {
     type: 'boolean',
     defaultValue: false,
     label: 'Debug Mode',
     helperText: 'Show sync summary with detailed logs',
-    xs: 6
   },
-  verboseDebug: {
+    verboseDebug: {
     type: 'boolean',
     defaultValue: false,
     label: 'Verbose Debug',
@@ -245,8 +272,8 @@ exports.config = {
     showIf: x => x.debug,
     xs: 6,
     when: config => config.debug === true
-  }
-}
+  },
+},
 
 exports.init = api => {
   const { exec } = require('child_process')
@@ -271,7 +298,7 @@ exports.init = api => {
   const synapseCooldowns = {}
   const pendingSynapseTriggers = {}
 
-  const MANIFEST_VERSION = '5.9'
+  const MANIFEST_VERSION = '5.11'
   const MANIFEST_SIGNATURE = 'dual_list_v1'
   const NODE_FILE = '.sync_node.json'
   const FAILED_FILE_PREFIX = '.sync_failed_'
@@ -279,12 +306,29 @@ exports.init = api => {
   const SLIME_MOLD_FILE = '.slime_mold.json'
   const SLIME_NETWORK_FILE = '.slime_network.json'
 
-  const SYNAPSE_MERGE_WINDOW_MS = 5000  // 內置固化 5 秒
+  const SYNAPSE_MERGE_WINDOW_MS = 5000
   const DEFAULT_TIMESTAMP_TOLERANCE = 2
   const MAX_EXTRA_SCANS_PER_CYCLE = 5
   const MAX_HEAT_HISTORY = 20
   const MIN_HEAT_FOR_ACTION = 15
   const DECAY_MINIMUM = 0.1
+
+  // ========== 全局配置读取函数 ==========
+
+  const getEnableSlimeMold = () => api.getConfig('enableSlimeMold') || false
+  const getEnableSynapse = () => api.getConfig('enableSynapse') !== false
+  const getSynapseCooldown = () => {
+    const val = api.getConfig('synapseCooldown')
+    return (val && val >= 1 && val <= 60) ? val : 10
+  }
+  const getMountProbeThreshold = () => {
+    const val = api.getConfig('mountProbeThreshold')
+    return (val && val >= 50 && val <= 100) ? val / 100 : 0.8
+  }
+  const getMountProbeMinPaths = () => {
+    const val = api.getConfig('mountProbeMinPaths')
+    return (val && val >= 2 && val <= 10) ? val : 3
+  }
 
   const getSlimeMoldCheckIntervalMs = () => {
     const sec = api.getConfig('slimeMoldCheckInterval')
@@ -351,6 +395,259 @@ exports.init = api => {
   const logDebug = (msg) => { if (api.getConfig('debug')) api.log(msg) }
   const logVerbose = (msg) => { if (api.getConfig('verboseDebug')) api.log(msg) }
   const logError = (msg) => { if (api.getConfig('debug')) api.log(`[error] ${msg}`) }
+
+  // ========== 远程挂载探测（基于大规模消失模式） ==========
+
+  // 从本地获取已知子目录
+  const getKnownSubDirsFromLocal = (targetRoot) => {
+    const subDirs = []
+    try {
+      const rootNode = loadNodeFile(targetRoot)
+      if (rootNode?.childrenNames && rootNode.childrenNames.length > 0) {
+        return rootNode.childrenNames.slice(0, 10)
+      }
+      if (fs.existsSync(targetRoot)) {
+        const entries = fs.readdirSync(targetRoot, { withFileTypes: true })
+        for (const entry of entries) {
+          if (entry.isDirectory() && !isSyncMetaFile(entry.name) && !entry.name.startsWith('.')) {
+            subDirs.push(entry.name)
+          }
+        }
+      }
+    } catch (e) {}
+    return subDirs.slice(0, 10)
+  }
+
+  // 获取历史文件数量记录
+  const getHistoricalFileCounts = (targetRoot) => {
+    const counts = {}
+    try {
+      const globalState = loadGlobalSyncState(targetRoot)
+      if (globalState?.historicalCounts) {
+        return globalState.historicalCounts
+      }
+    } catch (e) {}
+    return counts
+  }
+
+  // 更新历史文件数量记录
+  const updateHistoricalCounts = (targetRoot, remoteList) => {
+    try {
+      const globalState = loadGlobalSyncState(targetRoot)
+      if (!globalState) return
+      if (!globalState.historicalCounts) globalState.historicalCounts = {}
+
+      const files = remoteList?.files || {}
+      const totalFiles = Object.keys(files).length
+      if (totalFiles > 0 || globalState.historicalCounts['/']) {
+        globalState.historicalCounts['/'] = totalFiles
+      }
+
+      const subDirs = remoteList?.subDirs || {}
+      for (const [dirName] of Object.entries(subDirs)) {
+        if (!globalState.historicalCounts[dirName]) {
+          globalState.historicalCounts[dirName] = 0
+        }
+      }
+
+      saveGlobalSyncState(targetRoot, globalState)
+    } catch (e) {}
+  }
+
+  const updateSubDirHistoricalCount = (targetRoot, subDirPath, fileCount) => {
+    try {
+      const globalState = loadGlobalSyncState(targetRoot)
+      if (!globalState) return
+      if (!globalState.historicalCounts) globalState.historicalCounts = {}
+      const key = subDirPath.replace(/^\//, '') || '/'
+      globalState.historicalCounts[key] = fileCount
+      saveGlobalSyncState(targetRoot, globalState)
+    } catch (e) {}
+  }
+
+  // 基于大规模消失模式的挂载探测
+  const probeRemoteMountByPattern = async (target, targetRoot) => {
+    const targetName = target.name
+    const username = target.username
+    const password = target.password
+    const apiUrl = new URL(target.remoteAddress)
+    const baseUrl = `${apiUrl.protocol}//${apiUrl.host}`
+    const remoteRootPath = apiUrl.pathname
+
+    const probeThreshold = getMountProbeThreshold()
+    const minPaths = getMountProbeMinPaths()
+
+    const pathsToProbe = []
+
+    // 1. 目标目录本身
+    pathsToProbe.push({ path: '', label: 'target' })
+
+    // 2. 从本地获取已知子目录
+    const knownSubDirs = getKnownSubDirsFromLocal(targetRoot)
+    for (const subDir of knownSubDirs.slice(0, 5)) {
+      pathsToProbe.push({ path: subDir, label: 'subdir' })
+    }
+
+    // 3. 尝试探测一些常见的同级目录
+    const pathSegments = remoteRootPath.replace(/\/+$/, '').split('/').filter(p => p)
+    if (pathSegments.length > 0) {
+      const currentDir = pathSegments[pathSegments.length - 1]
+      const siblingCandidates = [
+        currentDir + '_bak',
+        currentDir + '_backup',
+        currentDir + '_old',
+        'backup_' + currentDir,
+        'archive_' + currentDir
+      ]
+      for (const candidate of siblingCandidates.slice(0, 3)) {
+        pathsToProbe.push({ path: candidate, label: 'sibling' })
+      }
+    }
+
+    // 去重
+    const uniquePaths = []
+    const seen = new Set()
+    for (const item of pathsToProbe) {
+      const key = item.path
+      if (!seen.has(key)) {
+        seen.add(key)
+        uniquePaths.push(item)
+      }
+    }
+
+    logDebug(`[${targetName}] Mount probe: checking ${uniquePaths.length} paths`)
+
+    const probeResults = []
+    for (const item of uniquePaths) {
+      try {
+        const exploreUrl = buildExploreUrl(baseUrl, remoteRootPath, item.path)
+        const fileList = await getRemoteFileList(exploreUrl, targetName, username, password)
+        const files = fileList.filter(f => !f.n?.endsWith('/'))
+        const dirs = fileList.filter(f => f.n?.endsWith('/'))
+        const totalCount = files.length + dirs.length
+        probeResults.push({
+          path: item.path,
+          label: item.label,
+          fileCount: files.length,
+          dirCount: dirs.length,
+          totalCount: totalCount,
+          success: true,
+          hasContent: totalCount > 0
+        })
+        logVerbose(`[verbose] [${targetName}] Probe ${item.path || '/'}: ${totalCount} items`)
+      } catch (error) {
+        probeResults.push({
+          path: item.path,
+          label: item.label,
+          success: false,
+          error: error.message,
+          totalCount: 0,
+          hasContent: false
+        })
+      }
+    }
+
+    return analyzeProbeResults(probeResults, targetRoot, target, probeThreshold, minPaths)
+  }
+
+  const analyzeProbeResults = (probeResults, targetRoot, target, probeThreshold, minPaths) => {
+    const targetName = target.name
+    const successfulProbes = probeResults.filter(r => r.success)
+
+    if (successfulProbes.length === 0) {
+      return {
+        mounted: null,
+        reason: 'No probe paths accessible',
+        details: { probeResults }
+      }
+    }
+
+    const emptyOrNearEmpty = successfulProbes.filter(r => r.totalCount === 0 || r.totalCount <= 2)
+    const emptyRatio = emptyOrNearEmpty.length / successfulProbes.length
+    const nonEmptyProbes = successfulProbes.filter(r => r.totalCount > 2)
+
+    logDebug(`[${targetName}] Probe analysis: ${emptyOrNearEmpty.length}/${successfulProbes.length} empty (${(emptyRatio * 100).toFixed(1)}%), threshold ${(probeThreshold * 100).toFixed(0)}%, min paths ${minPaths}`)
+
+    // 情况1：超过阈值比例的路径为空
+    if (emptyRatio >= probeThreshold && successfulProbes.length >= minPaths) {
+      const historicalCounts = getHistoricalFileCounts(targetRoot)
+      let hasHistoricalData = false
+      let historicalFileCount = 0
+      let currentFileCount = 0
+      let pathsWithHistoricalData = 0
+
+      for (const result of successfulProbes) {
+        const key = result.path || '/'
+        if (historicalCounts[key] !== undefined && historicalCounts[key] > 0) {
+          hasHistoricalData = true
+          historicalFileCount += historicalCounts[key]
+          currentFileCount += result.totalCount
+          pathsWithHistoricalData++
+        }
+      }
+
+      if (hasHistoricalData && pathsWithHistoricalData >= Math.min(2, successfulProbes.length)) {
+        const disappearanceRate = historicalFileCount > 0 ? 1 - (currentFileCount / historicalFileCount) : 1
+        logDebug(`[${targetName}] Historical: ${historicalFileCount} -> ${currentFileCount}, disappearance: ${(disappearanceRate * 100).toFixed(1)}%`)
+
+        if (disappearanceRate >= 0.9) {
+          return {
+            mounted: false,
+            reason: `Massive file disappearance: ${(disappearanceRate * 100).toFixed(1)}% of files gone across ${pathsWithHistoricalData} paths`,
+            details: { emptyRatio, historicalFileCount, currentFileCount, disappearanceRate, pathsWithHistoricalData, probeResults }
+          }
+        }
+
+        if (emptyRatio === 1.0 && disappearanceRate >= 0.7) {
+          return {
+            mounted: false,
+            reason: `All ${successfulProbes.length} probe paths empty with ${(disappearanceRate * 100).toFixed(1)}% historical file loss`,
+            details: { emptyRatio, historicalFileCount, currentFileCount, disappearanceRate, probeResults }
+          }
+        }
+      }
+
+      if (emptyRatio === 1.0 && successfulProbes.length >= 5) {
+        return {
+          mounted: false,
+          reason: `All ${successfulProbes.length} probe paths are empty - likely unmounted`,
+          details: { emptyRatio, probeResults }
+        }
+      }
+
+      if (emptyRatio >= 0.9 && nonEmptyProbes.length <= 1) {
+        return {
+          mounted: null,
+          reason: `${emptyOrNearEmpty.length} paths empty, only ${nonEmptyProbes.length} path has content - suspicious`,
+          details: { emptyRatio, probeResults }
+        }
+      }
+    }
+
+    // 情况2：有足够多的非空路径
+    if (nonEmptyProbes.length >= 2 && emptyRatio < probeThreshold) {
+      return {
+        mounted: true,
+        reason: `${nonEmptyProbes.length} paths have content, ${emptyOrNearEmpty.length} paths are empty (normal)`,
+        details: { emptyRatio, probeResults }
+      }
+    }
+
+    // 情况3：部分路径有内容，但空比例也高
+    if (nonEmptyProbes.length > 0 && emptyRatio >= 0.5 && emptyRatio < probeThreshold) {
+      return {
+        mounted: null,
+        reason: `Mixed results: ${nonEmptyProbes.length} paths have content, ${emptyOrNearEmpty.length} empty - uncertain`,
+        details: { emptyRatio, probeResults }
+      }
+    }
+
+    return {
+      mounted: null,
+      reason: 'Cannot determine mount status from probe results',
+      details: { emptyRatio, probeResults }
+    }
+  }
 
   // ========== 黏菌算法相关函数 ==========
 
@@ -593,7 +890,7 @@ exports.init = api => {
   }
 
   const checkSlimeMoldScans = async (target, targetRoot) => {
-    if (!target.enableSlimeMold) return
+    if (!getEnableSlimeMold()) return
     const targetName = target.name
     const baseIntervalDays = target.syncInterval !== undefined ? target.syncInterval : 3
     let network = loadSlimeNetwork(targetRoot)
@@ -650,7 +947,40 @@ exports.init = api => {
       let nodeData = loadSlimeNode(localPath) || createSlimeNode(localPath, relativePath, baseIntervalDays)
       const apiUrl = new URL(target.remoteAddress)
       const exploreUrl = buildExploreUrl(`${apiUrl.protocol}//${apiUrl.host}`, apiUrl.pathname, relativePath)
-      const fileList = await getRemoteFileList(exploreUrl, targetName, target.username, target.password)
+
+      let fileList
+      let remoteHealthy = true
+      try {
+        fileList = await getRemoteFileList(exploreUrl, targetName, target.username, target.password)
+
+        if (fileList.length === 0) {
+          const mountStatus = await probeRemoteMountByPattern(target, targetRoot)
+          if (mountStatus.mounted === false) {
+            logError(`[${targetName}] Slime scan: remote unmounted detected - ${mountStatus.reason}`)
+            return
+          }
+          if (mountStatus.mounted === null) {
+            logDebug(`[${targetName}] Slime scan: mount status uncertain, skipping deletion`)
+            remoteHealthy = false
+          }
+        }
+
+        if (fileList.length > 0 && fileList.length < 5) {
+          const historical = getHistoricalFileCounts(targetRoot)
+          const historicalCount = historical['/'] || 0
+          if (historicalCount > 50 && fileList.length < historicalCount * 0.1) {
+            const mountStatus = await probeRemoteMountByPattern(target, targetRoot)
+            if (mountStatus.mounted === false) {
+              logError(`[${targetName}] Slime scan: remote unmounted detected - ${mountStatus.reason}`)
+              return
+            }
+          }
+        }
+      } catch (error) {
+        logError(`[${targetName}] Slime scan failed to get remote list: ${error.message}`)
+        return
+      }
+
       const remoteFiles = {}
       const excludeSettings = getExcludeSettings(target)
       const allowedExtensions = getAllowedExtensions(target)
@@ -677,7 +1007,8 @@ exports.init = api => {
       nodeData.extraScansTriggered = (nodeData.extraScansTriggered || 0) + 1
       saveSlimeNode(localPath, nodeData)
       logDebug(`[slime] [${targetName}] Scan '${relativePath || '/'}': ${changeCount} changes, heat:${nodeData.heat}, files:${Object.keys(remoteFiles).length}`)
-      if (changeCount > 0) {
+
+      if (changeCount > 0 && remoteHealthy) {
         const comparison = compareListsForSlime(remoteFiles, localScan.files)
         for (const file of comparison.filesToDownload) {
           try {
@@ -714,7 +1045,7 @@ exports.init = api => {
   }
 
   const updateSlimeAfterSync = (target, targetRoot, relativePath, comparison, nodeData) => {
-    if (!target.enableSlimeMold) return
+    if (!getEnableSlimeMold()) return
     try {
       const localPath = relativePath ? path.join(targetRoot, relativePath) : targetRoot
       const baseIntervalDays = target.syncInterval !== undefined ? target.syncInterval : 3
@@ -777,7 +1108,8 @@ exports.init = api => {
     timestampFixedFiles: 0,
     currentProcessingPath: null,
     completedDirs: [],
-    errors: []
+    errors: [],
+    historicalCounts: {}
   })
 
   const loadGlobalSyncState = (targetRoot) => {
@@ -1174,44 +1506,100 @@ exports.init = api => {
     }
   }
 
-  const compareDualLists = (remoteList, localList) => {
+  const compareDualLists = (remoteList, localList, options = {}) => {
+    const { remoteHealthy = true, allowDeletion = true } = options
+
     const result = {
-      hasChanges: false, filesToDownload: [], filesToFixTimestamp: [], filesToDelete: [], dirsToDelete: [], newRemoteDirs: [],
-      remoteList, localList,
-      summary: { filesToAdd: 0, filesToUpdate: 0, filesToFixTimestamp: 0, filesToRemove: 0, dirsToAdd: 0, dirsToRemove: 0, totalBytesToDownload: 0, sizeOnlyFiles: 0, dualVerifyFiles: 0 }
+      hasChanges: false,
+      filesToDownload: [],
+      filesToFixTimestamp: [],
+      filesToDelete: [],
+      dirsToDelete: [],
+      newRemoteDirs: [],
+      remoteList,
+      localList,
+      summary: {
+        filesToAdd: 0,
+        filesToUpdate: 0,
+        filesToFixTimestamp: 0,
+        filesToRemove: 0,
+        dirsToAdd: 0,
+        dirsToRemove: 0,
+        totalBytesToDownload: 0,
+        sizeOnlyFiles: 0,
+        dualVerifyFiles: 0,
+        deletionSkipped: false,
+        deletionSkipReason: null
+      }
     }
+
+    const safeToDelete = remoteHealthy === true && allowDeletion === true
+
     const remoteFiles = remoteList?.files || {}
     const remoteDirs = remoteList?.subDirs || {}
     const localFiles = localList?.files || {}
     const localDirs = localList?.subDirs || {}
+
+    // 处理新增和更新
     for (const [fileName, remoteInfo] of Object.entries(remoteFiles)) {
       const localInfo = localFiles[fileName]
       const useDualVerification = needsDualVerification(fileName)
       if (!localInfo) {
         result.filesToDownload.push({ name: fileName, size: remoteInfo.size, mtime: remoteInfo.mtime, ctime: remoteInfo.ctime, reason: 'missing', isPriority: remoteInfo.isPriority || false, useDualVerification })
-        result.summary.filesToAdd++; result.summary.totalBytesToDownload += remoteInfo.size; result.hasChanges = true
+        result.summary.filesToAdd++
+        result.summary.totalBytesToDownload += remoteInfo.size
+        result.hasChanges = true
       } else if (localInfo.size !== remoteInfo.size) {
         result.filesToDownload.push({ name: fileName, size: remoteInfo.size, mtime: remoteInfo.mtime, ctime: remoteInfo.ctime, reason: 'size_changed', isPriority: remoteInfo.isPriority || false, useDualVerification })
-        result.summary.filesToUpdate++; result.summary.totalBytesToDownload += remoteInfo.size; result.hasChanges = true
+        result.summary.filesToUpdate++
+        result.summary.totalBytesToDownload += remoteInfo.size
+        result.hasChanges = true
       } else if (remoteInfo.mtime && !isTimestampMatch(remoteInfo.mtime, localInfo.mtime)) {
         if (useDualVerification) {
           result.filesToDownload.push({ name: fileName, size: remoteInfo.size, mtime: remoteInfo.mtime, ctime: remoteInfo.ctime, reason: 'timestamp_mismatch', isPriority: remoteInfo.isPriority || false, useDualVerification: true })
-          result.summary.filesToUpdate++; result.summary.totalBytesToDownload += remoteInfo.size; result.summary.dualVerifyFiles++; result.hasChanges = true
+          result.summary.filesToUpdate++
+          result.summary.totalBytesToDownload += remoteInfo.size
+          result.summary.dualVerifyFiles++
+          result.hasChanges = true
         } else {
           result.filesToFixTimestamp.push({ name: fileName, mtime: remoteInfo.mtime, ctime: remoteInfo.ctime })
-          result.summary.filesToFixTimestamp++; result.summary.sizeOnlyFiles++; result.hasChanges = true
+          result.summary.filesToFixTimestamp++
+          result.summary.sizeOnlyFiles++
+          result.hasChanges = true
         }
       }
     }
-    for (const [fileName] of Object.entries(localFiles)) {
-      if (!remoteFiles[fileName]) { result.filesToDelete.push({ name: fileName, size: localFiles[fileName].size }); result.summary.filesToRemove++; result.hasChanges = true }
-    }
+
     for (const dirName of Object.keys(remoteDirs)) {
-      if (!localDirs[dirName]) { result.newRemoteDirs.push({ name: dirName }); result.summary.dirsToAdd++; result.hasChanges = true }
+      if (!localDirs[dirName]) {
+        result.newRemoteDirs.push({ name: dirName })
+        result.summary.dirsToAdd++
+        result.hasChanges = true
+      }
     }
-    for (const dirName of Object.keys(localDirs)) {
-      if (!remoteDirs[dirName]) { result.dirsToDelete.push({ name: dirName }); result.summary.dirsToRemove++; result.hasChanges = true }
+
+    // 只有在安全时才进行删除
+    if (safeToDelete) {
+      for (const [fileName] of Object.entries(localFiles)) {
+        if (!remoteFiles[fileName]) {
+          result.filesToDelete.push({ name: fileName, size: localFiles[fileName].size })
+          result.summary.filesToRemove++
+          result.hasChanges = true
+        }
+      }
+      for (const dirName of Object.keys(localDirs)) {
+        if (!remoteDirs[dirName]) {
+          result.dirsToDelete.push({ name: dirName })
+          result.summary.dirsToRemove++
+          result.hasChanges = true
+        }
+      }
+    } else {
+      result.summary.deletionSkipped = true
+      result.summary.deletionSkipReason = remoteHealthy === null ? 'Mount status unknown (probe uncertain)' :
+                                           !remoteHealthy ? 'Remote unhealthy (probe failed)' : 'Deletion disabled'
     }
+
     return result
   }
 
@@ -1219,13 +1607,24 @@ exports.init = api => {
     const targetName = target.name
     const fileDelay = api.getConfig('fileDelay')
     const downloadConcurrency = api.getConfig('concurrentDownloads') || 1
-    if (target.enabled === false) { logDebug(`[sync] [${targetName}] Disabled, skipping`); return }
-    if (!shouldScanTarget(target)) { logDebug(`[sync] [${targetName}] Not due for sync`); return }
+
+    if (target.enabled === false) {
+      logDebug(`[sync] [${targetName}] Disabled, skipping`)
+      return
+    }
+    if (!shouldScanTarget(target)) {
+      logDebug(`[sync] [${targetName}] Not due for sync`)
+      return
+    }
+
     logDebug(`[sync] [${targetName}] Starting sync -> ${targetRoot}`)
     if (!fs.existsSync(targetRoot)) fs.mkdirSync(targetRoot, { recursive: true })
+
     let globalState = loadGlobalSyncState(targetRoot)
     const isResuming = globalState?.state === 'paused'
-    if (!globalState || globalState.version !== MANIFEST_VERSION) globalState = createGlobalSyncState(targetName, targetRoot)
+    if (!globalState || globalState.version !== MANIFEST_VERSION) {
+      globalState = createGlobalSyncState(targetName, targetRoot)
+    }
     if (!isResuming) {
       globalState.totalDirs = globalState.processedDirs = globalState.totalFiles = globalState.downloadedFiles = globalState.failedFiles = globalState.timestampFixedFiles = 0
       globalState.completedDirs = globalState.errors = []
@@ -1233,124 +1632,342 @@ exports.init = api => {
     globalState.state = 'syncing'
     globalState.syncStartTime = globalState.syncStartTime || new Date().toISOString()
     saveGlobalSyncState(targetRoot, globalState)
-    if (target.enableSlimeMold) {
+
+    if (getEnableSlimeMold()) {
       let slimeNetwork = loadSlimeNetwork(targetRoot)
-      if (!slimeNetwork) { slimeNetwork = createSlimeNetwork(targetName, targetRoot, target.syncInterval || 3); saveSlimeNetwork(targetRoot, slimeNetwork) }
+      if (!slimeNetwork) {
+        slimeNetwork = createSlimeNetwork(targetName, targetRoot, target.syncInterval || 3)
+        saveSlimeNetwork(targetRoot, slimeNetwork)
+      }
     }
+
     await retryFailedFiles(targetRoot, target)
+
     const apiUrl = new URL(target.remoteAddress)
     const baseUrl = `${apiUrl.protocol}//${apiUrl.host}`
     const remoteRootPath = apiUrl.pathname
+
     const syncDirectory = async (remotePath, localPath) => {
-      if (shouldStopFn?.()) { globalState.state = 'paused'; saveGlobalSyncState(targetRoot, globalState); return { pendingCount: 0, failedFiles: [], interrupted: true } }
+      if (shouldStopFn?.()) {
+        globalState.state = 'paused'
+        saveGlobalSyncState(targetRoot, globalState)
+        return { pendingCount: 0, failedFiles: [], interrupted: true }
+      }
+
       if (fileDelay > 0) await new Promise(resolve => setTimeout(resolve, fileDelay))
+
       try {
         globalState.currentProcessingPath = localPath
         globalState.state = 'scanning'
         saveGlobalSyncState(targetRoot, globalState)
+
         let nodeData = loadNodeFile(localPath) || createNodeData(path.basename(localPath) || '/', remotePath, localPath)
+
         const exploreUrl = buildExploreUrl(baseUrl, remoteRootPath, remotePath)
         logVerbose(`[verbose] [${targetName}] Exploring: ${exploreUrl}`)
-        const fileList = await getRemoteFileList(exploreUrl, targetName, target.username, target.password)
+
+        let fileList
+        let remoteHealthy = true
+        let healthCheckFailed = false
+        let healthError = null
+
+        try {
+          fileList = await getRemoteFileList(exploreUrl, targetName, target.username, target.password)
+
+          if (fileList.length === 0) {
+            const mountStatus = await probeRemoteMountByPattern(target, targetRoot)
+            if (mountStatus.mounted === false) {
+              remoteHealthy = false
+              healthCheckFailed = true
+              healthError = `Remote unmounted: ${mountStatus.reason}`
+              logError(`[${targetName}] ${healthError}`)
+              return {
+                pendingCount: 0,
+                failedFiles: [],
+                interrupted: false,
+                healthCheckFailed: true,
+                error: healthError,
+                details: mountStatus.details
+              }
+            }
+            if (mountStatus.mounted === null) {
+              remoteHealthy = false
+              logDebug(`[${targetName}] Mount status uncertain for ${remotePath || '/'}, skipping deletion`)
+            }
+          }
+
+          if (fileList.length > 0 && fileList.length < 5 && remotePath === '') {
+            const historical = getHistoricalFileCounts(targetRoot)
+            const historicalCount = historical['/'] || 0
+            if (historicalCount > 50 && fileList.length < historicalCount * 0.1) {
+              const mountStatus = await probeRemoteMountByPattern(target, targetRoot)
+              if (mountStatus.mounted === false) {
+                remoteHealthy = false
+                healthCheckFailed = true
+                healthError = `Remote unmounted: ${mountStatus.reason}`
+                logError(`[${targetName}] ${healthError}`)
+                return {
+                  pendingCount: 0,
+                  failedFiles: [],
+                  interrupted: false,
+                  healthCheckFailed: true,
+                  error: healthError,
+                  details: mountStatus.details
+                }
+              }
+            }
+          }
+
+        } catch (error) {
+          remoteHealthy = false
+          healthCheckFailed = true
+          healthError = error.message
+          logError(`[${targetName}] Failed to get remote file list: ${error.message}`)
+          return {
+            pendingCount: 0,
+            failedFiles: [],
+            interrupted: false,
+            healthCheckFailed: true,
+            error: healthError
+          }
+        }
+
         const remoteFiles = {}
         const remoteSubDirs = {}
         const excludeSettings = getExcludeSettings(target)
         const allowedExtensions = getAllowedExtensions(target)
+
         for (const item of fileList) {
           if (!item?.n) continue
           const isDir = item.n.endsWith('/')
           const name = isDir ? item.n.slice(0, -1) : item.n
-          if (isDir) { if (!shouldExcludeFolder(name, excludeSettings.excludeFolders)) remoteSubDirs[name] = { mtime: item.m || item.c || new Date().toISOString() } }
-          else if (!shouldExcludeFile(name, excludeSettings.excludeFiles, allowedExtensions)) {
-            remoteFiles[name] = { size: item.s || 0, mtime: item.m || null, ctime: item.c || null, isPriority: matchesPriorityPattern(name, (target.priorityPatterns || '').split(',').map(p => p.trim()).filter(p => p)), useDualVerification: needsDualVerification(name) }
+          if (isDir) {
+            if (!shouldExcludeFolder(name, excludeSettings.excludeFolders)) {
+              remoteSubDirs[name] = { mtime: item.m || item.c || new Date().toISOString() }
+            }
+          } else if (!shouldExcludeFile(name, excludeSettings.excludeFiles, allowedExtensions)) {
+            remoteFiles[name] = {
+              size: item.s || 0,
+              mtime: item.m || null,
+              ctime: item.c || null,
+              isPriority: matchesPriorityPattern(name, (target.priorityPatterns || '').split(',').map(p => p.trim()).filter(p => p)),
+              useDualVerification: needsDualVerification(name)
+            }
           }
         }
+
         const newRemoteList = { files: remoteFiles, subDirs: remoteSubDirs, scannedAt: new Date().toISOString() }
         const newLocalList = scanLocalDirectory(localPath, excludeSettings.excludeFiles, excludeSettings.excludeFolders, allowedExtensions)
+
         nodeData.syncStatus.phase = 'comparing'
         saveNodeFile(localPath, nodeData)
-        const comparison = compareDualLists(newRemoteList, newLocalList)
-        Object.assign(nodeData, { remoteList: newRemoteList, localList: newLocalList, comparisonResult: comparison, childrenNames: Object.keys(remoteSubDirs) })
+
+        const comparison = compareDualLists(newRemoteList, newLocalList, {
+          remoteHealthy: remoteHealthy,
+          allowDeletion: true
+        })
+
+        if (comparison.summary.deletionSkipped) {
+          logDebug(`[sync] [${targetName}] Deletion skipped for ${remotePath || '/'}: ${comparison.summary.deletionSkipReason}`)
+        }
+
+        if (remotePath === '') {
+          updateHistoricalCounts(targetRoot, newRemoteList)
+        } else {
+          updateSubDirHistoricalCount(targetRoot, remotePath, Object.keys(remoteFiles).length)
+        }
+
+        Object.assign(nodeData, {
+          remoteList: newRemoteList,
+          localList: newLocalList,
+          comparisonResult: comparison,
+          childrenNames: Object.keys(remoteSubDirs)
+        })
         nodeData.syncStatus.lastVerify = new Date().toISOString()
         globalState.totalFiles += Object.keys(remoteFiles).length
         globalState.totalDirs += Object.keys(remoteSubDirs).length + 1
         saveGlobalSyncState(targetRoot, globalState)
+
         updateSlimeAfterSync(target, targetRoot, remotePath, comparison, nodeData)
+
         for (const fileToFix of comparison.filesToFixTimestamp) {
           const localFilePath = path.join(localPath, fileToFix.name)
-          if (fs.existsSync(localFilePath)) { await setFileTimestamps(localFilePath, fileToFix.mtime, fileToFix.ctime); nodeData.syncStatus.timestampFixed++ }
+          if (fs.existsSync(localFilePath)) {
+            await setFileTimestamps(localFilePath, fileToFix.mtime, fileToFix.ctime)
+            nodeData.syncStatus.timestampFixed++
+          }
         }
         globalState.timestampFixedFiles = (globalState.timestampFixedFiles || 0) + nodeData.syncStatus.timestampFixed
-        for (const fileToDelete of comparison.filesToDelete) {
-          try { if (fs.existsSync(path.join(localPath, fileToDelete.name))) fs.unlinkSync(path.join(localPath, fileToDelete.name)) } catch (e) {}
+
+        if (remoteHealthy) {
+          for (const fileToDelete of comparison.filesToDelete) {
+            try {
+              const filePath = path.join(localPath, fileToDelete.name)
+              if (fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath)
+                logVerbose(`[verbose] [${targetName}] Deleted: ${fileToDelete.name}`)
+              }
+            } catch (e) {
+              logError(`[${targetName}] Failed to delete ${fileToDelete.name}: ${e.message}`)
+            }
+          }
         }
+
         for (const fileToDownload of comparison.filesToDownload) {
-          if (fileToDownload.reason !== 'missing') { try { if (fs.existsSync(path.join(localPath, fileToDownload.name))) fs.unlinkSync(path.join(localPath, fileToDownload.name)) } catch (e) {} }
+          if (fileToDownload.reason !== 'missing') {
+            try {
+              const filePath = path.join(localPath, fileToDownload.name)
+              if (fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath)
+              }
+            } catch (e) {}
+          }
         }
-        for (const dirToDelete of comparison.dirsToDelete) {
-          const dirPath = path.join(localPath, dirToDelete.name)
-          try { if (fs.existsSync(dirPath)) { [getNodeFilePath(dirPath), getSlimeMoldPath(dirPath)].forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p) }); fs.rmSync(dirPath, { recursive: true, force: true }) } } catch (e) {}
+
+        if (remoteHealthy) {
+          for (const dirToDelete of comparison.dirsToDelete) {
+            const dirPath = path.join(localPath, dirToDelete.name)
+            try {
+              if (fs.existsSync(dirPath)) {
+                [getNodeFilePath(dirPath), getSlimeMoldPath(dirPath)].forEach(p => {
+                  if (fs.existsSync(p)) fs.unlinkSync(p)
+                })
+                fs.rmSync(dirPath, { recursive: true, force: true })
+                logVerbose(`[verbose] [${targetName}] Deleted directory: ${dirToDelete.name}`)
+              }
+            } catch (e) {
+              logError(`[${targetName}] Failed to delete directory ${dirToDelete.name}: ${e.message}`)
+            }
+          }
         }
+
         for (const newDir of comparison.newRemoteDirs) {
           const dirPath = path.join(localPath, newDir.name)
-          if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true })
+          if (!fs.existsSync(dirPath)) {
+            fs.mkdirSync(dirPath, { recursive: true })
+          }
         }
+
         nodeData.syncStatus.phase = 'downloading'
         const filesToDownload = comparison.filesToDownload || []
         const failedFiles = []
         let downloadedCount = 0
+
         if (filesToDownload.length > 0 && !shouldStopFn?.()) {
           const downloadQueue = [...filesToDownload].sort((a, b) => (b.isPriority ? 1 : 0) - (a.isPriority ? 1 : 0))
           const activeDownloads = new Set()
+
           await new Promise((resolve) => {
             const processNext = async () => {
-              if (shouldStopFn?.() || (downloadQueue.length === 0 && activeDownloads.size === 0)) { if (activeDownloads.size === 0) resolve(); return }
+              if (shouldStopFn?.() || (downloadQueue.length === 0 && activeDownloads.size === 0)) {
+                if (activeDownloads.size === 0) resolve()
+                return
+              }
+
               while (activeDownloads.size < downloadConcurrency && downloadQueue.length > 0) {
                 const file = downloadQueue.shift()
                 const fileRemotePath = (!remotePath || remotePath === '/' ? '' : remotePath + '/') + file.name
                 const remoteFileUrl = buildDownloadUrl(target.remoteAddress, fileRemotePath)
                 const localFilePath = path.join(localPath, file.name)
+
                 activeDownloads.add(file.name)
-                if (fileDelay > 0 && downloadedCount > 0) await new Promise(r => setTimeout(r, fileDelay))
+                if (fileDelay > 0 && downloadedCount > 0) {
+                  await new Promise(r => setTimeout(r, fileDelay))
+                }
+
                 downloadWithAria2(remoteFileUrl, localFilePath, targetName, target.username, target.password, file.mtime, file.ctime)
-                  .then(() => { downloadedCount++; removeFromFailedQueue(targetRoot, targetName, fileRemotePath); globalState.downloadedFiles++; saveGlobalSyncState(targetRoot, globalState); logDebug(`[sync] [${targetName}] Downloaded: ${file.name} (${formatBytes(file.size)})`) })
-                  .catch((error) => { failedFiles.push(file); addToFailedQueue(targetRoot, targetName, { remotePath: fileRemotePath, localPath: localFilePath, size: file.size, mtime: file.mtime, ctime: file.ctime }, error); globalState.failedFiles++; saveGlobalSyncState(targetRoot, globalState); logError(`[${targetName}] Failed: ${file.name}`) })
-                  .finally(() => { activeDownloads.delete(file.name); processNext() })
+                  .then(() => {
+                    downloadedCount++
+                    removeFromFailedQueue(targetRoot, targetName, fileRemotePath)
+                    globalState.downloadedFiles++
+                    saveGlobalSyncState(targetRoot, globalState)
+                    logDebug(`[sync] [${targetName}] Downloaded: ${file.name} (${formatBytes(file.size)})`)
+                  })
+                  .catch((error) => {
+                    failedFiles.push(file)
+                    addToFailedQueue(targetRoot, targetName, {
+                      remotePath: fileRemotePath,
+                      localPath: localFilePath,
+                      size: file.size,
+                      mtime: file.mtime,
+                      ctime: file.ctime
+                    }, error)
+                    globalState.failedFiles++
+                    saveGlobalSyncState(targetRoot, globalState)
+                    logError(`[${targetName}] Failed: ${file.name}`)
+                  })
+                  .finally(() => {
+                    activeDownloads.delete(file.name)
+                    processNext()
+                  })
               }
             }
             processNext()
           })
         }
+
         nodeData.syncStatus.phase = failedFiles.length > 0 ? 'partial' : 'synced'
-        Object.assign(nodeData.syncStatus, { filesTotal: Object.keys(remoteFiles).length, filesSynced: downloadedCount, filesFailed: failedFiles.length, lastSync: new Date().toISOString(), syncEndTime: new Date().toISOString() })
+        Object.assign(nodeData.syncStatus, {
+          filesTotal: Object.keys(remoteFiles).length,
+          filesSynced: downloadedCount,
+          filesFailed: failedFiles.length,
+          lastSync: new Date().toISOString(),
+          syncEndTime: new Date().toISOString()
+        })
         nodeData.comparisonResult.filesToDownload = failedFiles
         saveNodeFile(localPath, nodeData)
+
         globalState.processedDirs++
         globalState.completedDirs = globalState.completedDirs || []
         globalState.completedDirs.push(localPath)
         saveGlobalSyncState(targetRoot, globalState)
+
         let totalPending = failedFiles.length
         for (const childName of nodeData.childrenNames) {
-          if (shouldStopFn?.()) { globalState.state = 'paused'; saveGlobalSyncState(targetRoot, globalState); return { pendingCount: totalPending, failedFiles: [...failedFiles], interrupted: true } }
-          const childResult = await syncDirectory((!remotePath || remotePath === '/' ? '' : remotePath + '/') + childName, path.join(localPath, childName))
+          if (shouldStopFn?.()) {
+            globalState.state = 'paused'
+            saveGlobalSyncState(targetRoot, globalState)
+            return { pendingCount: totalPending, failedFiles: [...failedFiles], interrupted: true }
+          }
+          const childResult = await syncDirectory(
+            (!remotePath || remotePath === '/' ? '' : remotePath + '/') + childName,
+            path.join(localPath, childName)
+          )
           totalPending += childResult.pendingCount
-          if (childResult.interrupted) return { pendingCount: totalPending, failedFiles: [...failedFiles], interrupted: true }
+          if (childResult.interrupted) {
+            return { pendingCount: totalPending, failedFiles: [...failedFiles], interrupted: true }
+          }
         }
+
         return { pendingCount: totalPending, failedFiles: [...failedFiles], interrupted: false }
+
       } catch (error) {
-        logError(`[${targetName}] Sync failed: ${error.message}`)
+        logError(`[${targetName}] Sync failed for ${remotePath || '/'}: ${error.message}`)
         globalState.errors = globalState.errors || []
-        globalState.errors.push({ path: localPath, error: error.message, timestamp: new Date().toISOString() })
+        globalState.errors.push({
+          path: localPath,
+          error: error.message,
+          timestamp: new Date().toISOString()
+        })
         saveGlobalSyncState(targetRoot, globalState)
         return { pendingCount: 0, failedFiles: [], interrupted: false }
       }
     }
+
     const result = await syncDirectory('', targetRoot)
-    if (result.interrupted) { globalState.state = 'paused' }
-    else {
-      globalState.state = 'completed'; globalState.syncEndTime = new Date().toISOString(); targetLastScanTime[targetName] = Date.now()
-      if (target.enableSlimeMold) { let network = loadSlimeNetwork(targetRoot); if (network) saveSlimeNetwork(targetRoot, resetSlimeCycle(network)) }
+
+    if (result.interrupted) {
+      globalState.state = 'paused'
+    } else {
+      globalState.state = 'completed'
+      globalState.syncEndTime = new Date().toISOString()
+      targetLastScanTime[targetName] = Date.now()
+      if (getEnableSlimeMold()) {
+        let network = loadSlimeNetwork(targetRoot)
+        if (network) saveSlimeNetwork(targetRoot, resetSlimeCycle(network))
+      }
     }
+
     saveGlobalSyncState(targetRoot, globalState)
     logDebug(`[sync] [${targetName}] ${globalState.state} (${globalState.downloadedFiles}/${globalState.totalFiles} files)`)
     return result
@@ -1361,29 +1978,60 @@ exports.init = api => {
     if (!fs.existsSync(targetRoot)) return
     const failedQueue = loadFailedQueue(targetRoot, targetName)
     if (!failedQueue.files.length) return
+
     const remainingFiles = []
     const maxAttempts = api.getConfig('maxRetries') * 2
+
     for (const failedFile of failedQueue.files) {
-      if (failedFile.attempts >= maxAttempts) { remainingFiles.push(failedFile); continue }
+      if (failedFile.attempts >= maxAttempts) {
+        remainingFiles.push(failedFile)
+        continue
+      }
+
       const diskCheck = checkFileExistsOnDisk(failedFile.localPath, failedFile.size, failedFile.mtime)
       if (diskCheck.exists && diskCheck.sizeMatch && diskCheck.timeMatch) continue
       if (diskCheck.exists) try { fs.unlinkSync(failedFile.localPath) } catch (e) {}
+
       try {
         const apiUrl = new URL(target.remoteAddress)
-        if (!await checkServerAvailable(apiUrl, target.username, target.password)) { remainingFiles.push(failedFile); continue }
-        await downloadWithAria2(buildDownloadUrl(target.remoteAddress, failedFile.remotePath), failedFile.localPath, targetName, target.username, target.password, failedFile.mtime, failedFile.ctime)
-      } catch (error) { failedFile.attempts++; failedFile.error = error.message?.substring(0, 100) || 'Unknown'; failedFile.timestamp = new Date().toISOString(); remainingFiles.push(failedFile) }
+        if (!await checkServerAvailable(apiUrl, target.username, target.password)) {
+          remainingFiles.push(failedFile)
+          continue
+        }
+        await downloadWithAria2(
+          buildDownloadUrl(target.remoteAddress, failedFile.remotePath),
+          failedFile.localPath,
+          targetName,
+          target.username,
+          target.password,
+          failedFile.mtime,
+          failedFile.ctime
+        )
+      } catch (error) {
+        failedFile.attempts++
+        failedFile.error = error.message?.substring(0, 100) || 'Unknown'
+        failedFile.timestamp = new Date().toISOString()
+        remainingFiles.push(failedFile)
+      }
     }
+
     failedQueue.files = remainingFiles
     saveFailedQueue(targetRoot, targetName, failedQueue)
   }
 
   const checkScheduledWindow = () => {
-    if (!api.getConfig('enableScheduledSync')) { isInScheduledWindow = false; return }
+    if (!api.getConfig('enableScheduledSync')) {
+      isInScheduledWindow = false
+      return
+    }
     const nowInWindow = isWithinScheduledWindow()
     const now = Date.now()
-    if (nowInWindow !== isInScheduledWindow) { isInScheduledWindow = nowInWindow; lastWindowLogTime = now }
-    else if (!nowInWindow && (now - lastWindowLogTime) >= WINDOW_LOG_INTERVAL) { lastWindowLogTime = now }
+    if (nowInWindow !== isInScheduledWindow) {
+      isInScheduledWindow = nowInWindow
+      lastWindowLogTime = now
+    } else if (!nowInWindow && (now - lastWindowLogTime) >= WINDOW_LOG_INTERVAL) {
+      lastWindowLogTime = now
+    }
   }
 
   const saveCheckpoint = () => {
@@ -1399,68 +2047,101 @@ exports.init = api => {
 
   const runSlimeMoldChecks = async () => {
     if (!api.getConfig('enableSync') || isSyncing) return
+    if (!getEnableSlimeMold()) return
     const syncTargets = api.getConfig('syncTargets') || []
     for (const target of syncTargets) {
-      if (target.enabled === false || !target.enableSlimeMold || !target.localDestination) continue
-      try { await checkSlimeMoldScans(target, target.localDestination) } catch (e) {}
+      if (target.enabled === false || !target.localDestination) continue
+      try {
+        await checkSlimeMoldScans(target, target.localDestination)
+      } catch (e) {}
     }
   }
 
   const runSync = async () => {
-    if (!api.getConfig('enableSync')) { logDebug('[sync] Sync is disabled'); return }
-    if (api.getConfig('enableScheduledSync') && !isWithinScheduledWindow()) { logDebug('[sync] Outside scheduled window'); return }
-    if (isSyncing) { logDebug('[sync] Already syncing'); return }
+    if (!api.getConfig('enableSync')) {
+      logDebug('[sync] Sync is disabled')
+      return
+    }
+    if (api.getConfig('enableScheduledSync') && !isWithinScheduledWindow()) {
+      logDebug('[sync] Outside scheduled window')
+      return
+    }
+    if (isSyncing) {
+      logDebug('[sync] Already syncing')
+      return
+    }
+
     shouldStopSync = false
     isSyncing = true
     syncStartTime = Date.now()
+
     try {
       const syncTargets = api.getConfig('syncTargets') || []
       const enabledTargets = syncTargets.filter(t => t.enabled !== false && t.localDestination && t.remoteAddress)
-      if (enabledTargets.length === 0) { logDebug('[sync] No enabled targets with valid configuration'); return }
+
+      if (enabledTargets.length === 0) {
+        logDebug('[sync] No enabled targets with valid configuration')
+        return
+      }
+
       logDebug(`[sync] Cycle start - ${enabledTargets.length} targets`)
+
       for (const target of enabledTargets) {
         if (shouldStopSync || (api.getConfig('enableScheduledSync') && !isWithinScheduledWindow())) break
+
         const targetRoot = target.localDestination
         const globalState = loadGlobalSyncState(targetRoot)
         const hasIncompleteSync = globalState?.state === 'paused'
+
         if (!hasIncompleteSync && !shouldScanTarget(target)) continue
         if (!fs.existsSync(targetRoot)) fs.mkdirSync(targetRoot, { recursive: true })
+
         const apiUrl = new URL(target.remoteAddress)
-        if (!await checkServerAvailable(apiUrl, target.username, target.password)) { logDebug(`[sync] [${target.name}] Server unavailable`); continue }
+        if (!await checkServerAvailable(apiUrl, target.username, target.password)) {
+          logDebug(`[sync] [${target.name}] Server unavailable`)
+          continue
+        }
+
         await processTarget(target, targetRoot, () => shouldStopSync || (api.getConfig('enableScheduledSync') && !isWithinScheduledWindow()))
       }
+
       logDebug(`[sync] Cycle completed in ${((Date.now() - syncStartTime) / 1000).toFixed(1)}s`)
-    } catch (err) { logError(`Sync failed: ${err.message}`) }
-    finally { isSyncing = false; shouldStopSync = false; if (global.gc) global.gc() }
+    } catch (err) {
+      logError(`Sync failed: ${err.message}`)
+    } finally {
+      isSyncing = false
+      shouldStopSync = false
+      if (global.gc) global.gc()
+    }
   }
 
-// ========== 黏菌突觸：訪問加熱黏菌熱度 ==========
+  // ========== 黏菌突觸 ==========
 
-const triggerSynapse = (target, targetRoot) => {
-  if (!target.enableSlimeMold) return
+  const triggerSynapse = (target, targetRoot) => {
+    if (!getEnableSlimeMold()) return
 
-  const targetName = target.name
-  const baseIntervalDays = target.syncInterval !== undefined ? target.syncInterval : 3
+    const targetName = target.name
+    const baseIntervalDays = target.syncInterval !== undefined ? target.syncInterval : 3
 
-  let network = loadSlimeNetwork(targetRoot)
-  if (!network) {
-    network = createSlimeNetwork(targetName, targetRoot, baseIntervalDays)
+    let network = loadSlimeNetwork(targetRoot)
+    if (!network) {
+      network = createSlimeNetwork(targetName, targetRoot, baseIntervalDays)
+    }
+
+    let rootNode = loadSlimeNode(targetRoot) || createSlimeNode(targetRoot, '/', baseIntervalDays)
+    rootNode.changeStats.totalFiles = Math.max(rootNode.changeStats.totalFiles || 1, 10)
+    updateSlimeHeat(rootNode, 25, network)
+    saveSlimeNode(targetRoot, rootNode)
+    updateSlimeNetwork(network, '/', 25, rootNode.changeStats.totalFiles)
+    saveSlimeNetwork(targetRoot, network)
+
+    logDebug(`[synapse] [${targetName}] Heated slime mold (heat: ${rootNode.heat})`)
   }
-
-  let rootNode = loadSlimeNode(targetRoot) || createSlimeNode(targetRoot, '/', baseIntervalDays)
-  rootNode.changeStats.totalFiles = Math.max(rootNode.changeStats.totalFiles || 1, 10)
-  updateSlimeHeat(rootNode, 25, network)
-  saveSlimeNode(targetRoot, rootNode)
-  updateSlimeNetwork(network, '/', 25, rootNode.changeStats.totalFiles)
-  saveSlimeNetwork(targetRoot, network)
-
-  logDebug(`[synapse] [${targetName}] Heated slime mold (heat: ${rootNode.heat})`)
-}
 
   const canTriggerSynapse = (target) => {
-    if (target.enableSynapse === false) return false
+    if (!getEnableSynapse()) return false
     const now = Date.now()
-    const cooldownMs = (target.synapseCooldown || 5) * 60 * 1000
+    const cooldownMs = getSynapseCooldown() * 60 * 1000
     if (!synapseCooldowns[target.name]) synapseCooldowns[target.name] = 0
     return (now - synapseCooldowns[target.name]) >= cooldownMs
   }
@@ -1471,21 +2152,31 @@ const triggerSynapse = (target, targetRoot) => {
     if (api.getConfig('enableScheduledSync')) {
       if (isWithinScheduledWindow()) await runSync()
       else if (isSyncing) shouldStopSync = true
-    } else { await runSync() }
+    } else {
+      await runSync()
+    }
   }
 
   initTargetScanTimes()
 
   syncTimer = api.setInterval(() => checkSync().catch(() => {}), 5 * 60 * 1000)
-  scheduledSyncTimer = api.setInterval(() => { if (api.getConfig('enableScheduledSync')) checkScheduledWindow() }, 60 * 1000)
-  windowCheckTimer = api.setInterval(() => { if (api.getConfig('enableScheduledSync') && isSyncing && !isWithinScheduledWindow()) shouldStopSync = true }, 30 * 1000)
-  const hasAnySlimeMoldTarget = (api.getConfig('syncTargets') || []).some(
-    t => t.enabled !== false && t.enableSlimeMold
+  scheduledSyncTimer = api.setInterval(() => {
+    if (api.getConfig('enableScheduledSync')) checkScheduledWindow()
+  }, 60 * 1000)
+  windowCheckTimer = api.setInterval(() => {
+    if (api.getConfig('enableScheduledSync') && isSyncing && !isWithinScheduledWindow()) {
+      shouldStopSync = true
+    }
+  }, 30 * 1000)
+
+  const hasAnySlimeMoldTarget = getEnableSlimeMold() && (api.getConfig('syncTargets') || []).some(
+    t => t.enabled !== false
   )
 
   if (hasAnySlimeMoldTarget) {
     slimeMoldCheckTimer = api.setInterval(
-      () => runSlimeMoldChecks().catch(() => {}), getSlimeMoldCheckIntervalMs()
+      () => runSlimeMoldChecks().catch(() => {}),
+      getSlimeMoldCheckIntervalMs()
     )
     checkpointTimer = api.setInterval(saveCheckpoint, getCheckpointIntervalMs())
   }
@@ -1495,7 +2186,12 @@ const triggerSynapse = (target, targetRoot) => {
   return {
     unload() {
       saveCheckpoint()
-      for (const key in pendingSynapseTriggers) { if (pendingSynapseTriggers[key]?.timer) clearTimeout(pendingSynapseTriggers[key].timer); delete pendingSynapseTriggers[key] }
+      for (const key in pendingSynapseTriggers) {
+        if (pendingSynapseTriggers[key]?.timer) {
+          clearTimeout(pendingSynapseTriggers[key].timer)
+          delete pendingSynapseTriggers[key]
+        }
+      }
       if (syncTimer) { clearInterval(syncTimer); syncTimer = null }
       if (scheduledSyncTimer) { clearInterval(scheduledSyncTimer); scheduledSyncTimer = null }
       if (windowCheckTimer) { clearInterval(windowCheckTimer); windowCheckTimer = null }
@@ -1506,6 +2202,7 @@ const triggerSynapse = (target, targetRoot) => {
     middleware: (ctx) => {
       return () => {
         if (!api.getConfig('enableSync')) return
+        if (!getEnableSynapse()) return
         const syncTargets = api.getConfig('syncTargets') || []
         if (syncTargets.length === 0) return
 
@@ -1524,14 +2221,16 @@ const triggerSynapse = (target, targetRoot) => {
         const normalizedPath = path.normalize(realPath).replace(/\\/g, '/')
 
         for (const target of syncTargets) {
-          if (target.enabled === false || target.enableSynapse === false) continue
+          if (target.enabled === false) continue
           if (!target.localDestination) continue
 
           const targetRoot = path.normalize(target.localDestination).replace(/\\/g, '/')
           if (!normalizedPath.startsWith(targetRoot)) continue
 
           const targetName = target.name
-          if (!pendingSynapseTriggers[targetName]) pendingSynapseTriggers[targetName] = { timer: null }
+          if (!pendingSynapseTriggers[targetName]) {
+            pendingSynapseTriggers[targetName] = { timer: null }
+          }
           const pending = pendingSynapseTriggers[targetName]
 
           if (pending.timer) break
@@ -1561,6 +2260,11 @@ const triggerSynapse = (target, targetRoot) => {
           version: MANIFEST_VERSION,
           enableSync: api.getConfig('enableSync'),
           enableScheduledSync: api.getConfig('enableScheduledSync'),
+          enableSlimeMold: getEnableSlimeMold(),
+          enableSynapse: getEnableSynapse(),
+          synapseCooldown: getSynapseCooldown(),
+          mountProbeThreshold: getMountProbeThreshold() * 100,
+          mountProbeMinPaths: getMountProbeMinPaths(),
           isInScheduledWindow,
           isSyncing,
           targets: syncTargets.map(target => {
@@ -1568,7 +2272,7 @@ const triggerSynapse = (target, targetRoot) => {
             const lastScan = targetLastScanTime[target.name] || 0
             const intervalDays = target.syncInterval !== undefined ? target.syncInterval : 3
             const now = Date.now()
-            const cooldownMs = (target.synapseCooldown || 5) * 60 * 1000
+            const cooldownMs = getSynapseCooldown() * 60 * 1000
             const lastSynapse = synapseCooldowns[target.name] || 0
             return {
               name: target.name,
@@ -1577,11 +2281,13 @@ const triggerSynapse = (target, targetRoot) => {
               syncIntervalDays: intervalDays,
               lastScan: lastScan > 0 ? new Date(lastScan).toISOString() : 'Never',
               state: globalState?.state || 'idle',
-              slimeMoldEnabled: target.enableSlimeMold || false,
-              synapseEnabled: target.enableSynapse !== false,
-              synapseCooldownMinutes: target.synapseCooldown || 5,
               synapseReady: (now - lastSynapse) >= cooldownMs,
-              progress: globalState ? { processedDirs: globalState.processedDirs, totalDirs: globalState.totalDirs, downloadedFiles: globalState.downloadedFiles, totalFiles: globalState.totalFiles } : null
+              progress: globalState ? {
+                processedDirs: globalState.processedDirs,
+                totalDirs: globalState.totalDirs,
+                downloadedFiles: globalState.downloadedFiles,
+                totalFiles: globalState.totalFiles
+              } : null
             }
           })
         }
@@ -1589,7 +2295,9 @@ const triggerSynapse = (target, targetRoot) => {
 
       async getFailedFiles({ targetName }) {
         const target = (api.getConfig('syncTargets') || []).find(t => t.name === targetName)
-        if (!target?.localDestination || !fs.existsSync(target.localDestination)) return { error: 'Target not found' }
+        if (!target?.localDestination || !fs.existsSync(target.localDestination)) {
+          return { error: 'Target not found' }
+        }
         return { target: targetName, ...loadFailedQueue(target.localDestination, targetName) }
       },
 
@@ -1598,15 +2306,25 @@ const triggerSynapse = (target, targetRoot) => {
         if (!target?.localDestination) return { error: 'Target not found' }
         const network = loadSlimeNetwork(target.localDestination)
         const now = Date.now()
-        const cooldownMs = (target.synapseCooldown || 5) * 60 * 1000
+        const cooldownMs = getSynapseCooldown() * 60 * 1000
         const lastSynapse = synapseCooldowns[targetName] || 0
-        if (!network) return { target: targetName, slimeMoldEnabled: false, synapseEnabled: target.enableSynapse !== false, synapseCooldownMinutes: target.synapseCooldown || 5, synapseReady: (now - lastSynapse) >= cooldownMs }
+
+        if (!network) {
+          return {
+            target: targetName,
+            slimeMoldEnabled: false,
+            synapseEnabled: getEnableSynapse(),
+            synapseCooldownMinutes: getSynapseCooldown(),
+            synapseReady: (now - lastSynapse) >= cooldownMs
+          }
+        }
+
         const decayRate = calculateDecayRate(network.syncIntervalDays || 3, getSlimeMoldCheckIntervalMs())
         return {
           target: targetName,
           slimeMoldEnabled: true,
-          synapseEnabled: target.enableSynapse !== false,
-          synapseCooldownMinutes: target.synapseCooldown || 5,
+          synapseEnabled: getEnableSynapse(),
+          synapseCooldownMinutes: getSynapseCooldown(),
           synapseReady: (now - lastSynapse) >= cooldownMs,
           syncIntervalDays: network.syncIntervalDays || 3,
           decayRate: parseFloat(decayRate.toFixed(6)),
@@ -1614,7 +2332,12 @@ const triggerSynapse = (target, targetRoot) => {
           maxExtraScansPerCycle: MAX_EXTRA_SCANS_PER_CYCLE,
           hotPaths: network.hotPaths.slice(0, 10).map(hotPath => {
             const node = loadSlimeNode(path.join(target.localDestination, hotPath))
-            return { path: hotPath, heat: parseFloat((node ? decayHeatByTime(node, network, now) : 0).toFixed(2)), changeRate: node?.changeStats?.changeRate || 0, lastChange: node?.changeStats?.lastChange || null }
+            return {
+              path: hotPath,
+              heat: parseFloat((node ? decayHeatByTime(node, network, now) : 0).toFixed(2)),
+              changeRate: node?.changeStats?.changeRate || 0,
+              lastChange: node?.changeStats?.lastChange || null
+            }
           })
         }
       },
@@ -1622,23 +2345,76 @@ const triggerSynapse = (target, targetRoot) => {
       async resetTarget({ targetName }) {
         const target = (api.getConfig('syncTargets') || []).find(t => t.name === targetName)
         if (!target?.localDestination) return { error: 'Target not found' }
+
         const targetRoot = target.localDestination
         targetLastScanTime[targetName] = 0
         synapseCooldowns[targetName] = 0
-        if (pendingSynapseTriggers[targetName]) { if (pendingSynapseTriggers[targetName].timer) clearTimeout(pendingSynapseTriggers[targetName].timer); delete pendingSynapseTriggers[targetName] }
-        ;[getNodeFilePath(targetRoot), getGlobalStatePath(targetRoot), getIndexFilePath(targetRoot, targetName), getFailedQueuePath(targetRoot, targetName), getSlimeNetworkPath(targetRoot)].forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p) })
+
+        if (pendingSynapseTriggers[targetName]) {
+          if (pendingSynapseTriggers[targetName].timer) {
+            clearTimeout(pendingSynapseTriggers[targetName].timer)
+          }
+          delete pendingSynapseTriggers[targetName]
+        }
+
+        ;[
+          getNodeFilePath(targetRoot),
+          getGlobalStatePath(targetRoot),
+          getIndexFilePath(targetRoot, targetName),
+          getFailedQueuePath(targetRoot, targetName),
+          getSlimeNetworkPath(targetRoot)
+        ].forEach(p => {
+          if (fs.existsSync(p)) fs.unlinkSync(p)
+        })
+
         return { message: `Reset completed for ${targetName}` }
       },
 
       async testTarget({ targetName }) {
         const target = (api.getConfig('syncTargets') || []).find(t => t.name === targetName)
         if (!target) return { error: 'Target not found' }
+
         try {
           const apiUrl = new URL(target.remoteAddress)
-          if (!await checkServerAvailable(apiUrl, target.username, target.password)) return { error: 'Server unavailable' }
-          const fileList = await getRemoteFileList(`${apiUrl.protocol}//${apiUrl.host}/~/api/get_file_list?uri=${encodeURIComponent(apiUrl.pathname)}`, target.name, target.username, target.password)
-          return { success: true, target: targetName, files: fileList.filter(i => !i.n?.endsWith('/')).length, dirs: fileList.filter(i => i.n?.endsWith('/')).length }
-        } catch (error) { return { error: error.message } }
+          const baseUrl = `${apiUrl.protocol}//${apiUrl.host}`
+          const exploreUrl = `${baseUrl}/~/api/get_file_list?uri=${encodeURIComponent(apiUrl.pathname)}`
+
+          if (!await checkServerAvailable(apiUrl, target.username, target.password)) {
+            return { success: false, target: targetName, error: 'Server unavailable' }
+          }
+
+          const fileList = await getRemoteFileList(exploreUrl, target.name, target.username, target.password)
+
+          let mountStatus = null
+          if (fileList.length === 0) {
+            mountStatus = await probeRemoteMountByPattern(target, target.localDestination)
+          }
+
+          return {
+            success: true,
+            target: targetName,
+            files: fileList.filter(i => !i.n?.endsWith('/')).length,
+            dirs: fileList.filter(i => i.n?.endsWith('/')).length,
+            isEmpty: fileList.length === 0,
+            mountStatus: mountStatus || { mounted: true, reason: 'Normal' }
+          }
+        } catch (error) {
+          return { success: false, target: targetName, error: error.message }
+        }
+      },
+
+      async probeMount({ targetName }) {
+        const target = (api.getConfig('syncTargets') || []).find(t => t.name === targetName)
+        if (!target) return { error: 'Target not found' }
+        if (!target.localDestination) return { error: 'No local destination' }
+
+        const result = await probeRemoteMountByPattern(target, target.localDestination)
+        return {
+          target: targetName,
+          mounted: result.mounted,
+          reason: result.reason,
+          details: result.details
+        }
       }
     }
   }
