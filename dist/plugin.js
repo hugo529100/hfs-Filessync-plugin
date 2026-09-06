@@ -1,4 +1,4 @@
-exports.version = 6.5
+exports.version = 6.7
 exports.description = "Sync folders from remote HFS3 servers with dual-list verification, incremental download, and optional slime mold optimization for dynamic scan scheduling. Supports scheduled windows, priority downloads, filters, checkpoint resume, and access-triggered heating."
 exports.apiRequired = 10
 exports.repo = "Hug3O/Filessync-plugin"
@@ -56,6 +56,13 @@ exports.config = {
         type: 'boolean',
         label: 'Enable this target',
         defaultValue: true,
+        xs: 12
+      },
+      syncOnStartup: {
+        type: 'boolean',
+        label: 'Sync on Startup',
+        defaultValue: false,
+        helperText: 'Trigger a sync immediately when server/plugin restarts (respects sync queue)',
         xs: 12
       },
       name: {
@@ -2181,7 +2188,31 @@ exports.init = api => {
     checkpointTimer = api.setInterval(saveCheckpoint, getCheckpointIntervalMs())
   }
 
-  if (api.getConfig('enableSync')) setTimeout(() => runSync().catch(() => {}), 3000)
+  // ========== 收集启动时需要同步的目标 ==========
+  const startupSyncTargets = (api.getConfig('syncTargets') || [])
+    .filter(t => t.enabled !== false && t.syncOnStartup === true && t.localDestination && t.remoteAddress)
+    .map(t => t.name)
+
+  if (startupSyncTargets.length > 0) {
+    logDebug(`[sync] ${startupSyncTargets.length} target(s) marked for startup sync: ${startupSyncTargets.join(', ')}`)
+  }
+
+  // ========== 启动同步（包含启动时同步的目标） ==========
+  if (api.getConfig('enableSync')) {
+    const syncTargets = api.getConfig('syncTargets') || []
+    for (const target of syncTargets) {
+      if (target.enabled !== false && target.syncOnStartup === true && target.localDestination) {
+        targetLastScanTime[target.name] = 0
+        const globalState = loadGlobalSyncState(target.localDestination)
+        if (globalState) {
+          globalState.state = 'idle'
+          saveGlobalSyncState(target.localDestination, globalState)
+        }
+        logDebug(`[sync] [${target.name}] Marked for startup sync`)
+      }
+    }
+    setTimeout(() => runSync().catch(() => {}), 3000)
+  }
 
   return {
     unload() {
@@ -2277,6 +2308,7 @@ exports.init = api => {
             return {
               name: target.name,
               enabled: target.enabled !== false,
+              syncOnStartup: target.syncOnStartup === true,
               destination: target.localDestination,
               syncIntervalDays: intervalDays,
               lastScan: lastScan > 0 ? new Date(lastScan).toISOString() : 'Never',
