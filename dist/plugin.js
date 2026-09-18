@@ -1,286 +1,335 @@
-exports.version = 6.7
+exports.version = 6.8
 exports.description = "Sync folders from remote HFS3 servers with dual-list verification, incremental download, and optional slime mold optimization for dynamic scan scheduling. Supports scheduled windows, priority downloads, filters, checkpoint resume, and access-triggered heating."
 exports.apiRequired = 10
 exports.repo = "Hug3O/Filessync-plugin"
 
 exports.config = {
-    aria2Path: {
-    type: 'real_path',
-    fileMask: 'aria2c.exe',
-    defaultValue: 'aria2c.exe',
-    label: 'Aria2c Path',
-    helperText: 'Path to aria2c executable.'
-  },
-  enableSync: {
-    type: 'boolean',
-    defaultValue: false,
-    label: 'Enable Synchronization',
-    helperText: 'Master switch to enable/disable all sync operations',
-    xs: 6
-  },
-  enableScheduledSync: {
-    type: 'boolean',
-    defaultValue: false,
-    label: 'Enable Scheduled Sync',
-    helperText: 'Enable time-based scheduling for sync operations',
-    xs: 6
-  },
-  syncStartTime: {
-    type: 'string',
-    defaultValue: '00:30',
-    label: 'Sync Start Time',
-    helperText: 'Start time for sync (HH:MM format, e.g., 00:30 for 12:30 AM)',
-    showIf: x => x.enableScheduledSync,
-    xs: 6,
-    when: config => config.enableScheduledSync === true
-  },
-  syncEndTime: {
-    type: 'string',
-    defaultValue: '08:30',
-    label: 'Sync End Time',
-    helperText: 'End time for sync (HH:MM format, e.g., 08:30 for 8:30 AM)',
-    showIf: x => x.enableScheduledSync,
-    xs: 6,
-    when: config => config.enableScheduledSync === true
-  },
+    // ============================================
+    // === Configuration Group Selector ===
+    // ============================================
+    config_tab: {
+        type: 'select',
+        defaultValue: 'general',
+        options: {
+            '1. General': 'general',
+            '2. Sync Targets': 'targets',
+            '3. Performance': 'performance',
+            '4. Retry & Checkpoint': 'retry',
+            '5. Slime Mold': 'slime',
+            '6. Advanced': 'advanced'
+        },
+        label: "Configuration Category",
+        helperText: "Select a category to view and edit settings.",
+        frontend: true
+    },
 
-
-
-  syncTargets: {
-    type: 'array',
-    label: 'Sync Targets',
-    helperText: 'Add multiple remote folders to sync. Each target mirrors remote structure exactly.',
-    default: [],
-    fields: {
-      enabled: {
+    // ============================================
+    // === 1. General ===
+    // ============================================
+    enableSync: {
+        showIf: x => x.config_tab === 'general',
         type: 'boolean',
-        label: 'Enable this target',
-        defaultValue: true,
-        xs: 12
-      },
-      syncOnStartup: {
-        type: 'boolean',
-        label: 'Sync on Startup',
         defaultValue: false,
-        helperText: 'Trigger a sync immediately when server/plugin restarts (respects sync queue)',
-        xs: 12
-      },
-      name: {
+        label: 'Enable Synchronization',
+        helperText: 'Master switch to enable/disable all sync operations',
+        xs: 6
+    },
+    enableScheduledSync: {
+        showIf: x => x.config_tab === 'general',
+        type: 'boolean',
+        defaultValue: false,
+        label: 'Enable Scheduled Sync',
+        helperText: 'Enable time-based scheduling for sync operations',
+        xs: 6
+    },
+    syncStartTime: {
+        showIf: x => x.config_tab === 'general' && x.enableScheduledSync,
         type: 'string',
-        label: 'Target Name',
-        helperText: 'A unique name for this sync target',
-        required: true,
-        xs: 12
-      },
-      remoteAddress: {
-        type: 'string',
-        label: 'Remote URL',
-        helperText: 'Full URL of the remote folder, e.g., http://192.168.1.224/h/Patch/',
-        required: true,
-        xs: 12
-      },
-      username: {
-        type: 'string',
-        label: 'Username',
-        helperText: 'Username for HTTP authentication',
+        defaultValue: '00:30',
+        label: 'Sync Start Time',
+        helperText: 'Start time for sync (HH:MM format, e.g., 00:30 for 12:30 AM)',
         xs: 6,
-        required: false
-      },
-      password: {
-        type: 'password',
-        label: 'Password',
-        helperText: 'Password for HTTP authentication',
+        when: config => config.enableScheduledSync === true
+    },
+    syncEndTime: {
+        showIf: x => x.config_tab === 'general' && x.enableScheduledSync,
+        type: 'string',
+        defaultValue: '08:30',
+        label: 'Sync End Time',
+        helperText: 'End time for sync (HH:MM format, e.g., 08:30 for 8:30 AM)',
         xs: 6,
-        required: false
-      },
-      localDestination: {
+        when: config => config.enableScheduledSync === true
+    },
+    aria2Path: {
+        showIf: x => x.config_tab === 'general',
         type: 'real_path',
-        fileMask: '',
-        folders: true,
-        files: false,
-        label: 'Local Destination',
-        helperText: 'Local folder to sync to (will be mirrored exactly to remote)',
-        defaultValue: '',
-        required: true,
-        xs: 6
-      },
-      syncInterval: {
+        fileMask: 'aria2c.exe',
+        defaultValue: 'aria2c.exe',
+        label: 'Aria2c Path',
+        helperText: 'Path to aria2c executable. Required before sync can download files.',
+        xs: 12
+    },
+
+    // ============================================
+    // === 2. Sync Targets ===
+    // ============================================
+    syncTargets: {
+        showIf: x => x.config_tab === 'targets',
+        type: 'array',
+        label: 'Sync Targets',
+        helperText: 'Add multiple remote folders to sync. Each target mirrors remote structure exactly.',
+        default: [],
+        fields: {
+            enabled: {
+                type: 'boolean',
+                label: 'Enable this target',
+                defaultValue: true,
+                xs: 12
+            },
+            syncOnStartup: {
+                type: 'boolean',
+                label: 'Sync on Startup',
+                defaultValue: false,
+                helperText: 'Trigger a sync immediately when server/plugin restarts (respects sync queue)',
+                xs: 12
+            },
+            name: {
+                type: 'string',
+                label: 'Target Name',
+                helperText: 'A unique name for this sync target',
+                required: true,
+                xs: 12
+            },
+            remoteAddress: {
+                type: 'string',
+                label: 'Remote URL',
+                helperText: 'Full URL of the remote folder, e.g., http://192.168.1.224/h/Patch/',
+                required: true,
+                xs: 12
+            },
+            username: {
+                type: 'string',
+                label: 'Username',
+                helperText: 'Username for HTTP authentication',
+                xs: 6,
+                required: false
+            },
+            password: {
+                type: 'password',
+                label: 'Password',
+                helperText: 'Password for HTTP authentication',
+                xs: 6,
+                required: false
+            },
+            localDestination: {
+                type: 'real_path',
+                fileMask: '',
+                folders: true,
+                files: false,
+                label: 'Local Destination',
+                helperText: 'Local folder to sync to (will be mirrored exactly to remote)',
+                defaultValue: '',
+                required: true,
+                xs: 6
+            },
+            syncInterval: {
+                type: 'number',
+                label: 'Sync Interval (days)',
+                defaultValue: 3,
+                helperText: 'Minimum days between sync cycles for this target',
+                xs: 6,
+                min: 0,
+                max: 365
+            },
+            priorityPatterns: {
+                type: 'text',
+                label: 'Priority Download Patterns',
+                defaultValue: '*.htm,*.html,*.js,*.css,*.ttf,*.woff',
+                helperText: 'Comma-separated patterns (supports * wildcard) to download first',
+                xs: 6
+            },
+            allowedExtensions: {
+                type: 'text',
+                label: 'Allowed Extensions (Whitelist)',
+                defaultValue: '',
+                helperText: 'Leave empty to download all. Comma-separated extensions to download ONLY (e.g., mp4,jpg,png). Non-matching files will be skipped.',
+                xs: 6
+            },
+            excludeFiles: {
+                type: 'text',
+                label: 'Exclude Extensions',
+                defaultValue: 'tmp,log,bak,swp,cache,part',
+                helperText: 'Comma-separated file extensions to skip',
+                xs: 6
+            },
+            excludeFolders: {
+                type: 'text',
+                label: 'Exclude Folders',
+                defaultValue: 'cache,temp,node_modules,.git,.svn,__pycache__',
+                helperText: 'Comma-separated folder names to exclude',
+                xs: 6
+            }
+        }
+    },
+
+    // ============================================
+    // === 3. Performance ===
+    // ============================================
+    exploreConcurrency: {
+        showIf: x => x.config_tab === 'performance',
         type: 'number',
-        label: 'Sync Interval (days)',
-        defaultValue: 3,
-        helperText: 'Minimum days between sync cycles for this target',
+        label: 'Explore Concurrency',
+        defaultValue: 1,
+        helperText: 'Simultaneous directory scans. HDD: 1-2. SSD: 4-8.',
         xs: 6,
-        min: 0,
-        max: 365
-      },
-      priorityPatterns: {
-        type: 'text',
-        label: 'Priority Download Patterns',
-        defaultValue: '*.htm,*.html,*.js,*.css,*.ttf,*.woff',
-        helperText: 'Comma-separated patterns (supports * wildcard) to download first',
-        xs: 6
-      },
-      allowedExtensions: {
-        type: 'text',
-        label: 'Allowed Extensions (Whitelist)',
-        defaultValue: '',
-        helperText: 'Leave empty to download all. Comma-separated extensions to download ONLY (e.g., mp4,jpg,png). Non-matching files will be skipped.',
-        xs: 6
-      },
-      excludeFiles: {
-        type: 'text',
-        label: 'Exclude Extensions',
-        defaultValue: 'tmp,log,bak,swp,cache,part',
-        helperText: 'Comma-separated file extensions to skip',
-        xs: 6
-      },
-      excludeFolders: {
-        type: 'text',
-        label: 'Exclude Folders',
-        defaultValue: 'cache,temp,node_modules,.git,.svn,__pycache__',
-        helperText: 'Comma-separated folder names to exclude',
-        xs: 6
-      }
+        min: 1,
+        max: 16
+    },
+    concurrentDownloads: {
+        showIf: x => x.config_tab === 'performance',
+        type: 'number',
+        label: 'Concurrent Downloads',
+        defaultValue: 1,
+        helperText: 'Files downloaded in parallel. HDD: 1. SSD: 2-4.',
+        xs: 6,
+        min: 1,
+        max: 16
+    },
+    fileDelay: {
+        showIf: x => x.config_tab === 'performance',
+        type: 'number',
+        label: 'Delay between files (ms)',
+        defaultValue: 200,
+        helperText: 'Time to wait between processing each file and directory scan.',
+        xs: 6,
+        min: 50,
+        max: 10000
+    },
+    speedLimit: {
+        showIf: x => x.config_tab === 'performance',
+        type: 'number',
+        label: 'Speed Limit (KB/s)',
+        defaultValue: 0,
+        helperText: 'Maximum transfer speed (0 = unlimited)',
+        xs: 6,
+        min: 0
+    },
 
-    }
-  },
+    // ============================================
+    // === 4. Retry & Checkpoint ===
+    // ============================================
+    maxRetries: {
+        showIf: x => x.config_tab === 'retry',
+        type: 'number',
+        label: 'Max Retries',
+        defaultValue: 3,
+        helperText: 'Maximum number of retry attempts on network failure',
+        xs: 6,
+        min: 1,
+        max: 20
+    },
+    retryDelay: {
+        showIf: x => x.config_tab === 'retry',
+        type: 'number',
+        label: 'Retry Delay (seconds)',
+        defaultValue: 5,
+        helperText: 'Delay between retry attempts',
+        xs: 6,
+        min: 1,
+        max: 300
+    },
+    checkpointInterval: {
+        showIf: x => x.config_tab === 'retry',
+        type: 'number',
+        label: 'Checkpoint Interval (seconds)',
+        defaultValue: 30,
+        helperText: 'How often to save sync progress checkpoint. Lower values = better resume capability but more disk writes.',
+        min: 20,
+        max: 600
+    },
 
+    // ============================================
+    // === 5. Slime Mold ===
+    // ============================================
+    enableSlimeMold: {
+        showIf: x => x.config_tab === 'slime',
+        type: 'boolean',
+        defaultValue: false,
+        label: 'Enable Slime Mold Optimization',
+        helperText: 'Dynamically adjusts scan frequency based on file change patterns. Continuously writes small .slime_mold.json files and performs lightweight remote checks — may slightly increase server load and disk I/O. The scan rhythm is governed by the global "Slime Mold Check Interval" setting.'
+    },
+    enableSynapse: {
+        showIf: x => x.config_tab === 'slime' && x.enableSlimeMold,
+        type: 'boolean',
+        defaultValue: true,
+        label: 'Enable Slime Synapse',
+        helperText: 'Heat slime mold when frontend accesses files in any target.',
+        when: config => config.enableSlimeMold === true
+    },
+    synapseCooldown: {
+        showIf: x => x.config_tab === 'slime' && x.enableSlimeMold,
+        type: 'number',
+        label: 'Synapse Cooldown (minutes)',
+        defaultValue: 10,
+        helperText: 'Minimum time between synapse-triggered syncs (1-60 minutes)',
+        xs: 6,
+        min: 1,
+        max: 60,
+        when: config => config.enableSlimeMold === true
+    },
+    slimeMoldCheckInterval: {
+        showIf: x => x.config_tab === 'slime' && x.enableSlimeMold,
+        type: 'number',
+        label: 'Slime Mold Check Interval (seconds)',
+        defaultValue: 300,
+        helperText: 'How often the slime mold algorithm checks heat levels and decides on extra scans. Lower values = more responsive but more disk I/O.',
+        xs: 6,
+        min: 10,
+        max: 6000,
+        when: config => config.enableSlimeMold === true
+    },
+    mountProbeThreshold: {
+        showIf: x => x.config_tab === 'slime',
+        type: 'number',
+        defaultValue: 80,
+        label: 'Mount Probe Threshold (%)',
+        helperText: 'Percentage of empty probe paths required to trigger unmount detection (50-100). Lower = more sensitive.',
+        xs: 6,
+        min: 50,
+        max: 100
+    },
+    mountProbeMinPaths: {
+        showIf: x => x.config_tab === 'slime',
+        type: 'number',
+        defaultValue: 3,
+        label: 'Min Probe Paths',
+        helperText: 'Minimum number of paths to probe before making a decision (2-10).',
+        xs: 6,
+        min: 2,
+        max: 10
+    },
 
-  exploreConcurrency: {
-    type: 'number',
-    label: 'Explore Concurrency',
-    defaultValue: 1,
-    helperText: 'Simultaneous directory scans. HDD: 1-2. SSD: 4-8.',
-    xs: 6,
-    min: 1,
-    max: 16
-  },
-  concurrentDownloads: {
-    type: 'number',
-    label: 'Concurrent Downloads',
-    defaultValue: 1,
-    helperText: 'Files downloaded in parallel. HDD: 1. SSD: 2-4.',
-    xs: 6,
-    min: 1,
-    max: 16
-  },
-  fileDelay: {
-    type: 'number',
-    label: 'Delay between files (ms)',
-    defaultValue: 200,
-    helperText: 'Time to wait between processing each file and directory scan.',
-    xs: 6,
-    min: 50,
-    max: 10000
-  },
-  speedLimit: {
-    type: 'number',
-    label: 'Speed Limit (KB/s)',
-    defaultValue: 0,
-    helperText: 'Maximum transfer speed (0 = unlimited)',
-    xs: 6,
-    min: 0
-  },
-  maxRetries: {
-    type: 'number',
-    label: 'Max Retries',
-    defaultValue: 3,
-    helperText: 'Maximum number of retry attempts on network failure',
-    xs: 6,
-    min: 1,
-    max: 20
-  },
-  retryDelay: {
-    type: 'number',
-    label: 'Retry Delay (seconds)',
-    defaultValue: 5,
-    helperText: 'Delay between retry attempts',
-    xs: 6,
-    min: 1,
-    max: 300
-  },
-  checkpointInterval: {
-    type: 'number',
-    label: 'Checkpoint Interval (seconds)',
-    defaultValue: 30,
-    helperText: 'How often to save sync progress checkpoint. Lower values = better resume capability but more disk writes.',
-    min: 20,
-    max: 600
-  },
-    // ========== 全局挂载探测配置 ==========
-  mountProbeThreshold: {
-    type: 'number',
-    defaultValue: 80,
-    label: 'Mount Probe Threshold (%)',
-    helperText: 'Percentage of empty probe paths required to trigger unmount detection (50-100). Lower = more sensitive.',
-    xs: 6,
-    min: 50,
-    max: 100
-  },
-  mountProbeMinPaths: {
-    type: 'number',
-    defaultValue: 3,
-    label: 'Min Probe Paths',
-    helperText: 'Minimum number of paths to probe before making a decision (2-10).',
-    xs: 6,
-    min: 2,
-    max: 10
-  },
-
-
-  // ========== 全局黏菌配置 ==========
-  enableSlimeMold: {
-    type: 'boolean',
-    defaultValue: false,
-    label: 'Enable Slime Mold Optimization',
-    helperText: 'Dynamically adjusts scan frequency based on file change patterns. Continuously writes small .slime_mold.json files and performs lightweight remote checks — may slightly increase server load and disk I/O. The scan rhythm is governed by the global "Slime Mold Check Interval" setting.',
-  },
-  enableSynapse: {
-    type: 'boolean',
-    defaultValue: true,
-    label: 'Enable Slime Synapse',
-    helperText: 'Heat slime mold when frontend accesses files in any target.',
-    showIf: x => x.enableSlimeMold, 
-    when: config => config.enableSlimeMold === true
-  },
-  synapseCooldown: {
-    type: 'number',
-    label: 'Synapse Cooldown (minutes)',
-    defaultValue: 10,
-    helperText: 'Minimum time between synapse-triggered syncs (1-60 minutes)',
-    showIf: x => x.enableSlimeMold,
-    xs: 6,
-    min: 1,
-    max: 60,
-    when: config => config.enableSlimeMold === true
-  },
-  slimeMoldCheckInterval: {
-    type: 'number',
-    label: 'Slime Mold Check Interval (seconds)',
-    defaultValue: 300,
-    helperText: 'How often the slime mold algorithm checks heat levels and decides on extra scans. Lower values = more responsive but more disk I/O.',
-    xs: 6,
-    min: 10,
-    max: 6000,
-    showIf: x => x.enableSlimeMold,
-    when: config => config.enableSlimeMold === true
-  },
+    // ============================================
+    // === 6. Advanced ===
+    // ============================================
     debug: {
-    type: 'boolean',
-    defaultValue: false,
-    label: 'Debug Mode',
-    helperText: 'Show sync summary with detailed logs',
-  },
+        showIf: x => x.config_tab === 'advanced',
+        type: 'boolean',
+        defaultValue: false,
+        label: 'Debug Mode',
+        helperText: 'Show sync summary with detailed logs'
+    },
     verboseDebug: {
-    type: 'boolean',
-    defaultValue: false,
-    label: 'Verbose Debug',
-    helperText: 'Show per-directory sync status',
-    showIf: x => x.debug,
-    xs: 6,
-    when: config => config.debug === true
-  },
+        showIf: x => x.config_tab === 'advanced' && x.debug,
+        type: 'boolean',
+        defaultValue: false,
+        label: 'Verbose Debug',
+        helperText: 'Show per-directory sync status',
+        xs: 6,
+        when: config => config.debug === true
+    }
 },
+
 
 exports.init = api => {
   const { exec } = require('child_process')
