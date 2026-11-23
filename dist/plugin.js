@@ -1,7 +1,7 @@
-exports.version = 6.8
+exports.version = 6.9
 exports.description = "Sync folders from remote HFS3 servers with dual-list verification, incremental download, and optional slime mold optimization for dynamic scan scheduling. Supports scheduled windows, priority downloads, filters, checkpoint resume, and access-triggered heating."
 exports.apiRequired = 10
-exports.repo = "Hug3O/Filessync-plugin"
+exports.repo = "hugo529100/hfs-Filessync-plugin"
 
 exports.config = {
     // ============================================
@@ -332,6 +332,9 @@ exports.config = {
 
 
 exports.init = api => {
+  if (typeof console.log.original !== 'function') {
+        console.log.original = console.log
+    }
   const { exec } = require('child_process')
   const path = require('path')
   const fs = require('fs')
@@ -354,7 +357,7 @@ exports.init = api => {
   const synapseCooldowns = {}
   const pendingSynapseTriggers = {}
 
-  const MANIFEST_VERSION = '5.11'
+  const MANIFEST_VERSION = '5.12'
   const MANIFEST_SIGNATURE = 'dual_list_v1'
   const NODE_FILE = '.sync_node.json'
   const FAILED_FILE_PREFIX = '.sync_failed_'
@@ -368,6 +371,18 @@ exports.init = api => {
   const MAX_HEAT_HISTORY = 20
   const MIN_HEAT_FOR_ACTION = 15
   const DECAY_MINIMUM = 0.1
+
+  // ============================================================
+  // === 內建保護：丟盤守衛（不對外暴露設定） ===
+  // ============================================================
+  // 原理：遠端硬碟丟盤時，掛載點底下的內容會完全消失，
+  //       因此從目標根目錄探測會得到「完全空」的結果。
+  //       這是丟盤的唯一可靠訊號，無需比例或歷史基準。
+  // 行為：根目錄完全為空 → 跳過整個 target 的同步，不碰本地任何檔案。
+  // 取捨：若管理員真的把遠端清空，會被擋下（極少見）。
+  // ------------------------------------------------------------
+  const ROOT_GUARD_ENABLED = true
+  // ============================================================
 
   // ========== 全局配置读取函数 ==========
 
@@ -1676,6 +1691,37 @@ exports.init = api => {
     logDebug(`[sync] [${targetName}] Starting sync -> ${targetRoot}`)
     if (!fs.existsSync(targetRoot)) fs.mkdirSync(targetRoot, { recursive: true })
 
+    const apiUrl = new URL(target.remoteAddress)
+    const baseUrl = `${apiUrl.protocol}//${apiUrl.host}`
+    const remoteRootPath = apiUrl.pathname
+
+    // ============================================================
+    // === 丟盤守衛：根目錄完全為空 → 跳過整個 target 的同步 ===
+    // ============================================================
+    // 遠端硬碟丟盤時，掛載點底下的內容會完全消失，
+    // 因此從目標根目錄探測會得到「完全空」的結果。
+    // 這是丟盤的唯一可靠訊號，無需比例或歷史基準。
+    // 命中時直接跳過整個同步，不碰本地任何檔案。
+    // ------------------------------------------------------------
+    if (ROOT_GUARD_ENABLED) {
+      try {
+        const rootExploreUrl = buildExploreUrl(baseUrl, remoteRootPath, '')
+        const rootList = await getRemoteFileList(rootExploreUrl, targetName, target.username, target.password)
+
+        if (rootList.length === 0) {
+          logError(`[${targetName}] Root is empty — possible unmount, skipping sync (no deletion)`)
+          return { pendingCount: 0, failedFiles: [], interrupted: false, skippedByRootGuard: true }
+        }
+        logDebug(`[sync] [${targetName}] Root guard passed: ${rootList.length} items`)
+      } catch (e) {
+        logError(`[${targetName}] Root probe failed: ${e.message} — skipping sync (no deletion)`)
+        return { pendingCount: 0, failedFiles: [], interrupted: false, skippedByRootGuard: true }
+      }
+    }
+    // ============================================================
+    // === 丟盤守衛結束 ===
+    // ============================================================
+
     let globalState = loadGlobalSyncState(targetRoot)
     const isResuming = globalState?.state === 'paused'
     if (!globalState || globalState.version !== MANIFEST_VERSION) {
@@ -1698,10 +1744,6 @@ exports.init = api => {
     }
 
     await retryFailedFiles(targetRoot, target)
-
-    const apiUrl = new URL(target.remoteAddress)
-    const baseUrl = `${apiUrl.protocol}//${apiUrl.host}`
-    const remoteRootPath = apiUrl.pathname
 
     const syncDirectory = async (remotePath, localPath) => {
       if (shouldStopFn?.()) {
@@ -2345,6 +2387,7 @@ exports.init = api => {
           synapseCooldown: getSynapseCooldown(),
           mountProbeThreshold: getMountProbeThreshold() * 100,
           mountProbeMinPaths: getMountProbeMinPaths(),
+          rootGuardEnabled: ROOT_GUARD_ENABLED,
           isInScheduledWindow,
           isSyncing,
           targets: syncTargets.map(target => {
